@@ -320,20 +320,6 @@ namespace NAM {
 		const float* __restrict in = ports.audio_in;
 		float* __restrict out = ports.audio_out;
 
-		// Store input samples in delay buffer for latency compensation
-		const size_t delaySize = inputDelayBuffer.size();
-		size_t writePos = delayBufferWritePos;
-
-		// Memory copy loop - can be optimized by compiler
-		#pragma GCC ivdep
-		for (uint32_t i = 0; i < n_samples; i++)
-		{
-			inputDelayBuffer[writePos] = in[i];
-			writePos++;
-			if (writePos >= delaySize) writePos = 0;  // Faster than modulo
-		}
-		delayBufferWritePos = writePos;
-
 		float level;
 
 		float modelInputAdjustmentDB = 0;
@@ -374,6 +360,21 @@ namespace NAM {
 				out[i] = in[i] * level;
 			}
 		}
+
+		// Store input-gained samples in delay buffer for latency compensation
+		// This ensures both wet and dry paths have consistent gain structure
+		const size_t delaySize = inputDelayBuffer.size();
+		size_t writePos = delayBufferWritePos;
+
+		// Memory copy loop - can be optimized by compiler
+		#pragma GCC ivdep
+		for (uint32_t i = 0; i < n_samples; i++)
+		{
+			inputDelayBuffer[writePos] = out[i];  // Store input-gained signal
+			writePos++;
+			if (writePos >= delaySize) writePos = 0;  // Faster than modulo
+		}
+		delayBufferWritePos = writePos;
 
 		float modelLoudnessAdjustmentDB = 0;
 
