@@ -377,6 +377,8 @@ namespace NAM {
 
 		float modelLoudnessAdjustmentDB = 0;
 
+		// Always process the model to maintain constant CPU load when not hard bypassed
+		// This keeps the model's internal state tracking the input signal
 		if (currentModel != nullptr)
 		{
 			currentModel->Process(out, out, n_samples);
@@ -436,12 +438,27 @@ namespace NAM {
 				const float dryGain = targetGain;
 				const float wetGain = 1.0f - dryGain;
 
-				#pragma GCC ivdep
-				#pragma GCC unroll 4
-				for (uint32_t i = 0; i < n_samples; i++)
+				// Fast path: when nearly or fully bypassed, just copy dry signal directly
+				// This avoids multiplying potentially extreme model outputs by small values
+				// which can still produce audible distortion/noise
+				if (wetGain < 0.01f)
 				{
-					const float dryInput = inputDelayBuffer[(delayReadPos + i) % delaySize];
-					out[i] = (out[i] * wetGain) + (dryInput * dryGain);
+					#pragma GCC ivdep
+					#pragma GCC unroll 4
+					for (uint32_t i = 0; i < n_samples; i++)
+					{
+						out[i] = inputDelayBuffer[(delayReadPos + i) % delaySize];
+					}
+				}
+				else
+				{
+					#pragma GCC ivdep
+					#pragma GCC unroll 4
+					for (uint32_t i = 0; i < n_samples; i++)
+					{
+						const float dryInput = inputDelayBuffer[(delayReadPos + i) % delaySize];
+						out[i] = (out[i] * wetGain) + (dryInput * dryGain);
+					}
 				}
 
 				smoothBypassGain = targetGain;
@@ -464,7 +481,17 @@ namespace NAM {
 					// Linear crossfade: fade out processed, fade in dry
 					const float wetGain = 1.0f - smoothGain;
 
-					out[i] = (out[i] * wetGain) + (dryInput * smoothGain);
+					// Use threshold to avoid multiplying extreme model outputs by small values
+					// Even 1% wet signal can be audible if model output has distortion
+					if (wetGain < 0.01f)
+					{
+						// Nearly/fully bypassed - use dry signal only
+						out[i] = dryInput;
+					}
+					else
+					{
+						out[i] = (out[i] * wetGain) + (dryInput * smoothGain);
+					}
 				}
 
 				smoothBypassGain = smoothGain;
