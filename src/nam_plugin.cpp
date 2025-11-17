@@ -386,117 +386,56 @@ namespace NAM {
 			modelLoudnessAdjustmentDB = currentModel->GetRecommendedOutputDBAdjustment();
 		}
 
-		// Convert output level from db
+		// Calculate desired output level from dB
 		float desiredOutputLevel = powf(10, (*(ports.output_level) + modelLoudnessAdjustmentDB) * 0.05f);
 
-		if (fabs(desiredOutputLevel - outputLevel) > SMOOTH_EPSILON)
+		// Apply output gain and bypass mixing in a single loop
+		size_t delayReadPos = (delayBufferWritePos + delaySize - maxBufferSize - n_samples) % delaySize;
+		float smoothGain = smoothBypassGain;
+		level = outputLevel;
+
+		// Check if we're in steady state (both level and bypass constant)
+		const bool steadyState = (fabs(level - desiredOutputLevel) < SMOOTH_EPSILON) &&
+		                         (fabs(smoothGain - bypassFadePosition) < 0.0001f);
+
+		if (steadyState)
 		{
-			level = outputLevel;
+			// Fast path: constant gain values - fully vectorizable
+			float wetGain = 1.0f - smoothGain;
+			wetGain = (wetGain < 0.05f) ? 0.0f : wetGain;
+			const float dryGain = 1.0f - wetGain;
 
-			// Process smoothing - recurrence prevents full SIMD but compiler can still optimize
 			#pragma GCC ivdep
-			for (unsigned int i = 0; i < n_samples; i++)
+			for (uint32_t i = 0; i < n_samples; i++)
 			{
-				// do very basic smoothing
-				level = (LEVEL_SMOOTH_A * level) + (LEVEL_SMOOTH_B * desiredOutputLevel);
-
-				out[i] = out[i] * level;  // FIXED: was using outputLevel instead of level
+				const float dryInput = inputDelayBuffer[(delayReadPos + i) % delaySize];
+				out[i] = (out[i] * level * wetGain) + (dryInput * dryGain);
 			}
-
-			outputLevel = level;
 		}
 		else
 		{
-			level = outputLevel = desiredOutputLevel;
-
-			// Constant gain - perfectly vectorizable with GCC
-			#pragma GCC ivdep
-			#pragma GCC unroll 8
-			for (unsigned int i = 0; i < n_samples; i++)
+			// Smoothing path: per-sample gain updates
+			for (uint32_t i = 0; i < n_samples; i++)
 			{
-				out[i] = out[i] * level;
+				// Smooth output level and bypass gain
+				level += (LEVEL_SMOOTH_A - 1.0f) * level + LEVEL_SMOOTH_B * desiredOutputLevel;
+				smoothGain += smoothingCoeff * (bypassFadePosition - smoothGain);
+
+				// Calculate wet gain, branchless clamp for SIMD-friendliness
+				float wetGain = 1.0f - smoothGain;
+				wetGain = (wetGain < 0.05f) ? 0.0f : wetGain;
+
+				// Mix processed and dry signals
+				const float dryInput = inputDelayBuffer[delayReadPos];
+				out[i] = (out[i] * level * wetGain) + (dryInput * (1.0f - wetGain));
+
+				delayReadPos++;
+				if (delayReadPos >= delaySize) delayReadPos = 0;
 			}
 		}
 
-		// Apply bypass crossfade if needed
-		if (bypassFadePosition > 0.0f)
-		{
-			// We're in a bypass fade or fully bypassed (but still processing for fade-out)
-			// Calculate delay read position accounting for latency
-			// Use the host's buffer size as it represents the actual processing latency
-			size_t delayReadPos = (delayBufferWritePos + delaySize - maxBufferSize - n_samples) % delaySize;
-
-			const float targetGain = bypassFadePosition;
-			const float coeff = smoothingCoeff;
-
-			// Check if gain is essentially constant (finished smoothing)
-			const float gainDiff = fabs(targetGain - smoothBypassGain);
-
-			if (gainDiff < 0.0001f)
-			{
-				// Gain is constant - this loop is fully vectorizable with GCC
-				const float dryGain = targetGain;
-				const float wetGain = 1.0f - dryGain;
-
-				// Fast path: when nearly or fully bypassed, just copy dry signal directly
-				// This avoids multiplying potentially extreme model outputs by small values
-				// which can still produce audible distortion/noise
-				if (wetGain < 0.01f)
-				{
-					#pragma GCC ivdep
-					#pragma GCC unroll 4
-					for (uint32_t i = 0; i < n_samples; i++)
-					{
-						out[i] = inputDelayBuffer[(delayReadPos + i) % delaySize];
-					}
-				}
-				else
-				{
-					#pragma GCC ivdep
-					#pragma GCC unroll 4
-					for (uint32_t i = 0; i < n_samples; i++)
-					{
-						const float dryInput = inputDelayBuffer[(delayReadPos + i) % delaySize];
-						out[i] = (out[i] * wetGain) + (dryInput * dryGain);
-					}
-				}
-
-				smoothBypassGain = targetGain;
-			}
-			else
-			{
-				// Gain is changing - process with smoothing
-				float smoothGain = smoothBypassGain;
-
-				for (uint32_t i = 0; i < n_samples; i++)
-				{
-					// Get delayed dry input
-					const float dryInput = inputDelayBuffer[delayReadPos];
-					delayReadPos++;
-					if (delayReadPos >= delaySize) delayReadPos = 0;
-
-					// Update smooth bypass gain using 1st order LPF per sample
-					smoothGain += coeff * (targetGain - smoothGain);
-
-					// Linear crossfade: fade out processed, fade in dry
-					const float wetGain = 1.0f - smoothGain;
-
-					// Use threshold to avoid multiplying extreme model outputs by small values
-					// Even 1% wet signal can be audible if model output has distortion
-					if (wetGain < 0.01f)
-					{
-						// Nearly/fully bypassed - use dry signal only
-						out[i] = dryInput;
-					}
-					else
-					{
-						out[i] = (out[i] * wetGain) + (dryInput * smoothGain);
-					}
-				}
-
-				smoothBypassGain = smoothGain;
-			}
-		}
+		outputLevel = level;
+		smoothBypassGain = smoothGain;
 
 		//float dcBlockCoefficient = 1 - (220.0 / sampleRate);
 
