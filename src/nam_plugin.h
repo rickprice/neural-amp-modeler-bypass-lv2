@@ -77,8 +77,7 @@ public:
   // Bypass crossfade state
   bool previousBypassState = false;
   float bypassFadePosition =
-      0.0f;                      // 0.0 = fully processed, 1.0 = fully bypassed
-  float smoothBypassGain = 0.0f; // Smoothed gain for 1st order LPF
+      0.0f; // 0.0 = fully processed, 1.0 = fully bypassed
   std::vector<float> inputDelayBuffer;
   size_t delayBufferWritePos = 0;
   static constexpr size_t FADE_TIME_MS = 20;
@@ -87,12 +86,15 @@ public:
 
   // Pre-calculated coefficients (set in initialize())
   float fadeIncrement = 0.0f;
-  float smoothingCoeff = 0.0f;
   size_t warmupSamplesTotal = 0;
 
-  // Smoothing coefficients for level adjustments
-  static constexpr float LEVEL_SMOOTH_A = 0.99f;
-  static constexpr float LEVEL_SMOOTH_B = 0.01f;
+  // Target values for gain smoothing
+  float targetInputLevel = 1.0f;
+  float targetOutputLevel = 1.0f;
+  float targetBypassGain = 0.0f;
+
+  // Smoothing coefficient for all gain transitions
+  static constexpr float SMOOTH_COEFF = 0.001f;
 
   Plugin();
   ~Plugin();

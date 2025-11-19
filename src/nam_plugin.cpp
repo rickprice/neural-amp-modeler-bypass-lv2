@@ -5,7 +5,8 @@
 
 #include "nam_plugin.h"
 
-#define SMOOTH_EPSILON .0001f
+#define SMOOTH_EPSILON 0.0001f
+#define GAIN_EPSILON 0.05f
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -94,7 +95,6 @@ bool Plugin::initialize(double sampleRate,
   // Pre-calculate fade coefficients
   fadeIncrement =
       1.0f / ((FADE_TIME_MS / 1000.0f) * static_cast<float>(sampleRate));
-  smoothingCoeff = fadeIncrement * 10.0f;
   warmupSamplesTotal =
       static_cast<size_t>((WARMUP_TIME_MS / 1000.0) * sampleRate);
 
@@ -216,6 +216,7 @@ __attribute__((optimize("tree-vectorize", "O3", "fp-contract=fast")))
 __attribute__((target("sse4.2,avx,avx2,fma")))
 #endif
 void Plugin::process(uint32_t n_samples) noexcept {
+  // ========== LV2 Control Message Processing ==========
   lv2_atom_forge_set_buffer(&atom_forge, (uint8_t *)ports.notify,
                             ports.notify->atom.size);
   lv2_atom_forge_sequence_head(&atom_forge, &sequence_frame, uris.units_frame);
@@ -244,184 +245,117 @@ void Plugin::process(uint32_t n_samples) noexcept {
     }
   }
 
-  // Handle bypass (lv2:enabled) with smooth crossfading
+  // ========== Bypass State Management ==========
   const bool bypassed = *(ports.enabled) < 0.5f;
   const bool hardBypassed = *(ports.hard_bypass) >= 0.5f;
 
   // Detect bypass state change
   if (bypassed != previousBypassState) {
     previousBypassState = bypassed;
-
-    // When transitioning from bypassed to active, start warmup period
     if (!bypassed) {
       warmupSamplesRemaining = warmupSamplesTotal;
     }
   }
 
-  // Hard bypass mode: only engages after soft bypass fade is complete
-  // This ensures smooth transitions while maximizing CPU savings in
-  // steady-state bypass
+  // Hard bypass early exit: skip ALL processing when fully bypassed
   if (bypassed && hardBypassed && bypassFadePosition >= 1.0f) {
-    // Fully bypassed with hard bypass enabled - skip ALL processing
     std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
     return;
   }
 
-  // Note: Soft bypass (bypassed && !hardBypassed) continues processing below
-  // This maintains constant CPU load to prevent audio glitches from sudden load
-  // changes
-
-  // Update fade position (using pre-calculated fadeIncrement)
+  // Update bypass fade position
   if (bypassed && bypassFadePosition < 1.0f) {
-    // Fading towards bypass
     bypassFadePosition =
         std::min(1.0f, bypassFadePosition + (fadeIncrement * n_samples));
   } else if (!bypassed && bypassFadePosition > 0.0f) {
-    // During warmup, hold at full bypass to let model process and stabilize
     if (warmupSamplesRemaining > 0) {
-      // Keep outputting 100% dry signal during warmup
       bypassFadePosition = 1.0f;
       warmupSamplesRemaining = (warmupSamplesRemaining > n_samples)
                                    ? (warmupSamplesRemaining - n_samples)
                                    : 0;
     } else {
-      // Warmup complete, start fading towards active processing
       bypassFadePosition =
           std::max(0.0f, bypassFadePosition - (fadeIncrement * n_samples));
     }
   }
 
-  // Cache pointers for better optimization
+  // Update target bypass gain
+  targetBypassGain = bypassFadePosition;
+
+  // ========== Calculate Target Gain Values ==========
   const float *__restrict in = ports.audio_in;
   float *__restrict out = ports.audio_out;
 
-  float level;
-
-  float modelInputAdjustmentDB = 0;
+  float modelInputAdjustmentDB = 0.0f;
+  float modelOutputAdjustmentDB = 0.0f;
 
   if (currentModel != nullptr) {
     modelInputAdjustmentDB = currentModel->GetRecommendedInputDBAdjustment();
+    modelOutputAdjustmentDB = currentModel->GetRecommendedOutputDBAdjustment();
   }
 
-  // convert input level from db
-  float desiredInputLevel =
-      powf(10, (*(ports.input_level) + modelInputAdjustmentDB) * 0.05f);
+  targetInputLevel =
+      powf(10.0f, (*(ports.input_level) + modelInputAdjustmentDB) * 0.05f);
+  targetOutputLevel =
+      powf(10.0f, (*(ports.output_level) + modelOutputAdjustmentDB) * 0.05f);
 
-  if (fabs(desiredInputLevel - inputLevel) > SMOOTH_EPSILON) {
-    level = inputLevel;
+  // ========== Apply Input Gain (SIMD-friendly) ==========
+  const float smoothCoeff = SMOOTH_COEFF;
+  float inGain = inputLevel;
 
-// Process smoothing - recurrence prevents full SIMD but compiler can still
-// optimize
 #pragma GCC ivdep
-    for (unsigned int i = 0; i < n_samples; i++) {
-      // do very basic smoothing
-      level = (LEVEL_SMOOTH_A * level) + (LEVEL_SMOOTH_B * desiredInputLevel);
-
-      out[i] = in[i] * level;
-    }
-
-    inputLevel = level;
-  } else {
-    level = inputLevel = desiredInputLevel;
-
-// Constant gain - perfectly vectorizable with GCC
-#pragma GCC ivdep
-#pragma GCC unroll 8
-    for (unsigned int i = 0; i < n_samples; i++) {
-      out[i] = in[i] * level;
-    }
+  for (uint32_t i = 0; i < n_samples; i++) {
+    inGain += smoothCoeff * (targetInputLevel - inGain);
+    out[i] = in[i] * inGain;
   }
+  inputLevel = inGain;
 
-  // Store input-gained samples in delay buffer for latency compensation
-  // This ensures both wet and dry paths have consistent gain structure
+  // ========== Store to Delay Buffer (SIMD-friendly) ==========
   const size_t delaySize = inputDelayBuffer.size();
   size_t writePos = delayBufferWritePos;
 
-// Memory copy loop - can be optimized by compiler
 #pragma GCC ivdep
   for (uint32_t i = 0; i < n_samples; i++) {
-    inputDelayBuffer[writePos] = out[i]; // Store input-gained signal
+    inputDelayBuffer[writePos] = out[i];
     writePos++;
     if (writePos >= delaySize)
-      writePos = 0; // Faster than modulo
+      writePos = 0;
   }
   delayBufferWritePos = writePos;
 
-  float modelLoudnessAdjustmentDB = 0;
-
-  // Always process the model to maintain constant CPU load when not hard
-  // bypassed This keeps the model's internal state tracking the input signal
+  // ========== Process Neural Model ==========
   if (currentModel != nullptr) {
     currentModel->Process(out, out, n_samples);
-
-    modelLoudnessAdjustmentDB =
-        currentModel->GetRecommendedOutputDBAdjustment();
   }
 
-  // Calculate desired output level from dB
-  float desiredOutputLevel =
-      powf(10, (*(ports.output_level) + modelLoudnessAdjustmentDB) * 0.05f);
-
-  // Apply output gain and bypass mixing in a single loop
-  size_t delayReadPos =
+  // ========== Apply Output Gain and Mix with Dry (SIMD-friendly) ==========
+  size_t readPos =
       (delayBufferWritePos + delaySize - maxBufferSize - n_samples) % delaySize;
-  float smoothGain = smoothBypassGain;
-  level = outputLevel;
 
-  // Check if we're in steady state (both level and bypass constant)
-  const bool steadyState =
-      (fabs(level - desiredOutputLevel) < SMOOTH_EPSILON) &&
-      (fabs(smoothGain - bypassFadePosition) < 0.0001f);
-
-  if (steadyState) {
-    // Fast path: constant gain values - fully vectorizable
-    float wetGain = 1.0f - smoothGain;
-    wetGain = (wetGain < 0.05f) ? 0.0f : wetGain;
-    const float dryGain = 1.0f - wetGain;
+  float outGain = outputLevel;
+  float mixGain = targetBypassGain;
 
 #pragma GCC ivdep
-    for (uint32_t i = 0; i < n_samples; i++) {
-      const float dryInput = inputDelayBuffer[(delayReadPos + i) % delaySize];
-      out[i] = (out[i] * level * wetGain) + (dryInput * dryGain);
-    }
-  } else {
-    // Smoothing path: per-sample gain updates
-    for (uint32_t i = 0; i < n_samples; i++) {
-      // Smooth output level and bypass gain
-      level +=
-          (LEVEL_SMOOTH_A - 1.0f) * level + LEVEL_SMOOTH_B * desiredOutputLevel;
-      smoothGain += smoothingCoeff * (bypassFadePosition - smoothGain);
+  for (uint32_t i = 0; i < n_samples; i++) {
+    // Smooth gains
+    outGain += smoothCoeff * (targetOutputLevel - outGain);
+    mixGain += smoothCoeff * (targetBypassGain - mixGain);
 
-      // Calculate wet gain, branchless clamp for SIMD-friendliness
-      float wetGain = 1.0f - smoothGain;
-      wetGain = (wetGain < 0.05f) ? 0.0f : wetGain;
+    // Calculate wet/dry mix
+    const float wetGain = (mixGain > 0.95f) ? 0.0f : (1.0f - mixGain);
+    const float dryGain = 1.0f - wetGain;
 
-      // Mix processed and dry signals
-      const float dryInput = inputDelayBuffer[delayReadPos];
-      out[i] = (out[i] * level * wetGain) + (dryInput * (1.0f - wetGain));
+    // Mix signals
+    const float wet = out[i] * outGain * wetGain;
+    const float dry = inputDelayBuffer[readPos] * dryGain;
+    out[i] = wet + dry;
 
-      delayReadPos++;
-      if (delayReadPos >= delaySize)
-        delayReadPos = 0;
-    }
+    readPos++;
+    if (readPos >= delaySize)
+      readPos = 0;
   }
 
-  outputLevel = level;
-  smoothBypassGain = smoothGain;
-
-  // float dcBlockCoefficient = 1 - (220.0 / sampleRate);
-
-  // for (unsigned int i = 0; i < n_samples; i++)
-  //{
-  //	float dcInput = ports.audio_out[i];
-
-  //	// dc blocker
-  //	ports.audio_out[i] = ports.audio_out[i] - prevDCInput +
-  //dcBlockCoefficient * prevDCOutput;
-
-  //	prevDCInput = dcInput;
-  //	prevDCOutput = ports.audio_out[i];
-  //}
+  outputLevel = outGain;
 }
 
 uint32_t Plugin::options_get(LV2_Handle, LV2_Options_Option *) {
