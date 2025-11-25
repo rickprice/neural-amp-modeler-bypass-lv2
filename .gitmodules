@@ -4,3 +4,6 @@
 [submodule "deps/NeuralAudio"]
 	path = deps/NeuralAudio
 	url = https://github.com/mikeoliphant/NeuralAudio
+[submodule "deps/DPF"]
+	path = deps/DPF
+	url = https://github.com/DISTRHO/DPF
