@@ -1,6 +1,11 @@
 #include "NAMUI.hpp"
 #include <string>
 #include <cstring>
+#include <cstdio>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 START_NAMESPACE_DISTRHO
 
@@ -10,7 +15,11 @@ NAMUI::NAMUI()
       fOutputLevel(0.0f),
       fEnabled(1.0f),
       fHardBypass(0.0f),
-      loadButtonHovered(false)
+      inputKnob(150, 150, 80, -20.0f, 20.0f, 0.0f, "Input", kParameterInputLevel),
+      outputKnob(450, 150, 80, -20.0f, 20.0f, 0.0f, "Output", kParameterOutputLevel),
+      enabledButton(120, 270, 120, 35, true, "Enabled", kParameterEnabled),
+      bypassButton(360, 270, 120, 35, false, "Hard Bypass", kParameterHardBypass),
+      loadButton(220, 320, 160, 40, "Load Model")
 {
     setGeometryConstraints(kUIWidth, kUIHeight, true);
 }
@@ -24,15 +33,19 @@ void NAMUI::parameterChanged(uint32_t index, float value)
     switch (index) {
     case kParameterInputLevel:
         fInputLevel = value;
+        inputKnob.value = value;
         break;
     case kParameterOutputLevel:
         fOutputLevel = value;
+        outputKnob.value = value;
         break;
     case kParameterEnabled:
         fEnabled = value;
+        enabledButton.value = (value >= 0.5f);
         break;
     case kParameterHardBypass:
         fHardBypass = value;
+        bypassButton.value = (value >= 0.5f);
         break;
     }
     repaint();
@@ -49,30 +62,128 @@ void NAMUI::stateChanged(const char* key, const char* value)
 void NAMUI::onNanoDisplay()
 {
     drawBackground();
-    drawControls();
+    drawKnob(inputKnob);
+    drawKnob(outputKnob);
+    drawToggleButton(enabledButton);
+    drawToggleButton(bypassButton);
+    drawButton(loadButton);
     drawModelInfo();
 }
 
 bool NAMUI::onMouse(const MouseEvent& ev)
 {
+    const float mx = ev.pos.getX();
+    const float my = ev.pos.getY();
+
     if (ev.press && ev.button == 1) {
-        if (isMouseOverLoadButton(ev.pos.getX(), ev.pos.getY())) {
-            // Request file dialog for the model path state
-            // DPF will show a file dialog because we set kStateIsFilenamePath
+        // Check knobs
+        if (inputKnob.contains(mx, my)) {
+            inputKnob.dragging = true;
+            inputKnob.dragStartY = my;
+            inputKnob.dragStartValue = inputKnob.value;
+            return true;
+        }
+        if (outputKnob.contains(mx, my)) {
+            outputKnob.dragging = true;
+            outputKnob.dragStartY = my;
+            outputKnob.dragStartValue = outputKnob.value;
+            return true;
+        }
+
+        // Check toggle buttons
+        if (enabledButton.contains(mx, my)) {
+            enabledButton.value = !enabledButton.value;
+            setParameterValue(kParameterEnabled, enabledButton.value ? 1.0f : 0.0f);
+            repaint();
+            return true;
+        }
+        if (bypassButton.contains(mx, my)) {
+            bypassButton.value = !bypassButton.value;
+            setParameterValue(kParameterHardBypass, bypassButton.value ? 1.0f : 0.0f);
+            repaint();
+            return true;
+        }
+
+        // Check load button
+        if (loadButton.contains(mx, my)) {
             requestStateFile(kStateKeyModelPath);
             return true;
         }
+    } else if (!ev.press && ev.button == 1) {
+        // Release knobs
+        if (inputKnob.dragging) {
+            inputKnob.dragging = false;
+            return true;
+        }
+        if (outputKnob.dragging) {
+            outputKnob.dragging = false;
+            return true;
+        }
     }
+
     return false;
 }
 
 bool NAMUI::onMotion(const MotionEvent& ev)
 {
-    bool newHovered = isMouseOverLoadButton(ev.pos.getX(), ev.pos.getY());
-    if (newHovered != loadButtonHovered) {
-        loadButtonHovered = newHovered;
+    const float mx = ev.pos.getX();
+    const float my = ev.pos.getY();
+    bool needsRepaint = false;
+
+    // Handle knob dragging
+    if (inputKnob.dragging) {
+        float delta = (inputKnob.dragStartY - my) * 0.5f;
+        float newValue = inputKnob.dragStartValue + delta;
+        newValue = std::max(inputKnob.min, std::min(inputKnob.max, newValue));
+        if (newValue != inputKnob.value) {
+            inputKnob.value = newValue;
+            setParameterValue(kParameterInputLevel, newValue);
+            needsRepaint = true;
+        }
+    }
+    if (outputKnob.dragging) {
+        float delta = (outputKnob.dragStartY - my) * 0.5f;
+        float newValue = outputKnob.dragStartValue + delta;
+        newValue = std::max(outputKnob.min, std::min(outputKnob.max, newValue));
+        if (newValue != outputKnob.value) {
+            outputKnob.value = newValue;
+            setParameterValue(kParameterOutputLevel, newValue);
+            needsRepaint = true;
+        }
+    }
+
+    // Update hover states
+    bool inputHovered = inputKnob.contains(mx, my);
+    bool outputHovered = outputKnob.contains(mx, my);
+    bool enabledHovered = enabledButton.contains(mx, my);
+    bool bypassHovered = bypassButton.contains(mx, my);
+    bool loadHovered = loadButton.contains(mx, my);
+
+    if (inputKnob.hovered != inputHovered) {
+        inputKnob.hovered = inputHovered;
+        needsRepaint = true;
+    }
+    if (outputKnob.hovered != outputHovered) {
+        outputKnob.hovered = outputHovered;
+        needsRepaint = true;
+    }
+    if (enabledButton.hovered != enabledHovered) {
+        enabledButton.hovered = enabledHovered;
+        needsRepaint = true;
+    }
+    if (bypassButton.hovered != bypassHovered) {
+        bypassButton.hovered = bypassHovered;
+        needsRepaint = true;
+    }
+    if (loadButton.hovered != loadHovered) {
+        loadButton.hovered = loadHovered;
+        needsRepaint = true;
+    }
+
+    if (needsRepaint) {
         repaint();
     }
+
     return false;
 }
 
@@ -81,90 +192,208 @@ void NAMUI::drawBackground()
     const float width = getWidth();
     const float height = getHeight();
 
-    // Dark background
+    // Main background gradient
     beginPath();
-    fillColor(30, 30, 35);
+    Paint bg = linearGradient(0, 0, 0, height,
+                              Color(35, 35, 40, 255),
+                              Color(25, 25, 30, 255));
+    fillPaint(bg);
     rect(0, 0, width, height);
     fill();
 
-    // Title bar
+    // Title bar with gradient
     beginPath();
-    fillColor(45, 45, 50);
-    rect(0, 0, width, 60);
+    Paint titleBg = linearGradient(0, 0, 0, 70,
+                                   Color(50, 50, 60, 255),
+                                   Color(40, 40, 50, 255));
+    fillPaint(titleBg);
+    rect(0, 0, width, 70);
     fill();
+
+    // Title bar bottom edge
+    beginPath();
+    strokeColor(60, 60, 70, 255);
+    strokeWidth(1.0f);
+    moveTo(0, 70);
+    lineTo(width, 70);
+    stroke();
 
     // Title text
-    fontSize(24);
-    fillColor(220, 220, 220);
+    fontSize(28);
+    fillColor(220, 220, 230);
     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-    text(width / 2, 30, "Neural Amp Modeler", nullptr);
+    text(width / 2, 35, "Neural Amp Modeler", nullptr);
 }
 
-void NAMUI::drawControls()
+void NAMUI::drawKnob(const Knob& knob)
 {
-    const float width = getWidth();
-    const float buttonX = (width - kButtonWidth) / 2;
-    const float buttonY = 100;
+    const float radius = knob.size / 2;
+    const float norm = knob.getNormalizedValue();
 
-    // Load Model Button
+    // Calculate angle (-140 to +140 degrees, with 0 at top)
+    const float startAngle = -140.0f * M_PI / 180.0f;
+    const float endAngle = 140.0f * M_PI / 180.0f;
+    const float angle = startAngle + norm * (endAngle - startAngle);
+
+    // Draw shadow
     beginPath();
-    if (loadButtonHovered) {
-        fillColor(90, 120, 200);
-    } else {
-        fillColor(70, 100, 180);
-    }
-    roundedRect(buttonX, buttonY, kButtonWidth, kButtonHeight, 4);
+    circle(knob.x + 2, knob.y + 2, radius);
+    fillColor(0, 0, 0, 60);
     fill();
 
-    // Button text
+    // Draw knob background
+    beginPath();
+    circle(knob.x, knob.y, radius);
+    Paint knobBg = radialGradient(knob.x - radius * 0.3f, knob.y - radius * 0.3f,
+                                  radius * 0.5f, radius * 1.2f,
+                                  Color(knob.hovered ? 75 : 65, knob.hovered ? 75 : 65, knob.hovered ? 85 : 75, 255),
+                                  Color(35, 35, 45, 255));
+    fillPaint(knobBg);
+    fill();
+
+    // Draw knob outline
+    beginPath();
+    circle(knob.x, knob.y, radius);
+    strokeColor(80, 80, 90, 255);
+    strokeWidth(1.5f);
+    stroke();
+
+    // Draw value arc
+    beginPath();
+    arc(knob.x, knob.y, radius - 4, -M_PI * 0.5f + startAngle, -M_PI * 0.5f + angle, CW);
+    strokeColor(90, 140, 220, 255);
+    strokeWidth(3.0f);
+    stroke();
+
+    // Draw center indicator line
+    const float indicatorLength = radius * 0.6f;
+    const float indicatorX = knob.x + std::cos(angle - M_PI * 0.5f) * indicatorLength;
+    const float indicatorY = knob.y + std::sin(angle - M_PI * 0.5f) * indicatorLength;
+
+    beginPath();
+    moveTo(knob.x, knob.y);
+    lineTo(indicatorX, indicatorY);
+    strokeColor(200, 200, 210, 255);
+    strokeWidth(2.5f);
+    stroke();
+
+    // Draw center dot
+    beginPath();
+    circle(knob.x, knob.y, 3);
+    fillColor(90, 140, 220, 255);
+    fill();
+
+    // Draw label
+    fontSize(14);
+    fillColor(200, 200, 210);
+    textAlign(ALIGN_CENTER | ALIGN_TOP);
+    text(knob.x, knob.y + radius + 8, knob.label, nullptr);
+
+    // Draw value
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.1f dB", knob.value);
+    fontSize(12);
+    fillColor(150, 150, 160);
+    textAlign(ALIGN_CENTER | ALIGN_TOP);
+    text(knob.x, knob.y + radius + 26, buf, nullptr);
+}
+
+void NAMUI::drawToggleButton(const ToggleButton& button)
+{
+    // Draw button background
+    beginPath();
+    roundedRect(button.x, button.y, button.width, button.height, 4);
+
+    if (button.value) {
+        if (button.hovered) {
+            fillColor(100, 160, 240, 255);
+        } else {
+            fillColor(80, 140, 220, 255);
+        }
+    } else {
+        if (button.hovered) {
+            fillColor(60, 60, 70, 255);
+        } else {
+            fillColor(50, 50, 60, 255);
+        }
+    }
+    fill();
+
+    // Draw button outline
+    beginPath();
+    roundedRect(button.x, button.y, button.width, button.height, 4);
+    if (button.value) {
+        strokeColor(110, 170, 250, 255);
+    } else {
+        strokeColor(70, 70, 80, 255);
+    }
+    strokeWidth(1.5f);
+    stroke();
+
+    // Draw text
+    fontSize(14);
+    if (button.value) {
+        fillColor(255, 255, 255);
+    } else {
+        fillColor(150, 150, 160);
+    }
+    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+    text(button.x + button.width / 2, button.y + button.height / 2, button.label, nullptr);
+}
+
+void NAMUI::drawButton(const Button& button)
+{
+    // Draw button background
+    beginPath();
+    roundedRect(button.x, button.y, button.width, button.height, 5);
+
+    if (button.hovered) {
+        Paint btnBg = linearGradient(button.x, button.y, button.x, button.y + button.height,
+                                     Color(90, 140, 220, 255),
+                                     Color(70, 120, 200, 255));
+        fillPaint(btnBg);
+    } else {
+        Paint btnBg = linearGradient(button.x, button.y, button.x, button.y + button.height,
+                                     Color(70, 120, 200, 255),
+                                     Color(60, 100, 180, 255));
+        fillPaint(btnBg);
+    }
+    fill();
+
+    // Draw button outline
+    beginPath();
+    roundedRect(button.x, button.y, button.width, button.height, 5);
+    strokeColor(90, 140, 220, 255);
+    strokeWidth(2.0f);
+    stroke();
+
+    // Draw text
     fontSize(16);
     fillColor(255, 255, 255);
     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-    text(buttonX + kButtonWidth / 2, buttonY + kButtonHeight / 2, "Load Model", nullptr);
-
-    // Parameter labels and values
-    const float paramY = 180;
-    const float paramSpacing = 30;
-
-    fontSize(14);
-    fillColor(200, 200, 200);
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-
-    char buf[32];
-
-    // Input Level
-    text(kPadding, paramY, "Input Level:", nullptr);
-    std::snprintf(buf, sizeof(buf), "%.1f dB", fInputLevel);
-    textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-    text(width - kPadding, paramY, buf, nullptr);
-
-    // Output Level
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(kPadding, paramY + paramSpacing, "Output Level:", nullptr);
-    std::snprintf(buf, sizeof(buf), "%.1f dB", fOutputLevel);
-    textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-    text(width - kPadding, paramY + paramSpacing, buf, nullptr);
-
-    // Enabled
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(kPadding, paramY + paramSpacing * 2, "Enabled:", nullptr);
-    textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-    text(width - kPadding, paramY + paramSpacing * 2, fEnabled >= 0.5f ? "Yes" : "No", nullptr);
-
-    // Hard Bypass
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(kPadding, paramY + paramSpacing * 3, "Hard Bypass:", nullptr);
-    textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-    text(width - kPadding, paramY + paramSpacing * 3, fHardBypass >= 0.5f ? "Yes" : "No", nullptr);
+    text(button.x + button.width / 2, button.y + button.height / 2, button.label, nullptr);
 }
 
 void NAMUI::drawModelInfo()
 {
     const float width = getWidth();
-    const float infoY = getHeight() - 40;
+    const float infoY = getHeight() - 30;
 
-    fontSize(12);
-    fillColor(150, 150, 150);
+    // Draw info panel background
+    beginPath();
+    rect(kPadding, infoY - 25, width - 2 * kPadding, 40);
+    fillColor(40, 40, 50, 200);
+    fill();
+
+    // Draw info panel outline
+    beginPath();
+    rect(kPadding, infoY - 25, width - 2 * kPadding, 40);
+    strokeColor(60, 60, 70, 255);
+    strokeWidth(1.0f);
+    stroke();
+
+    fontSize(11);
+    fillColor(180, 180, 190);
     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
 
     if (!modelPath.empty()) {
@@ -177,18 +406,9 @@ void NAMUI::drawModelInfo()
         std::string displayText = "Model: " + filename;
         text(width / 2, infoY, displayText.c_str(), nullptr);
     } else {
-        text(width / 2, infoY, "No model loaded", nullptr);
+        fillColor(140, 140, 150);
+        text(width / 2, infoY, "No model loaded - click 'Load Model' to select a .nam file", nullptr);
     }
-}
-
-bool NAMUI::isMouseOverLoadButton(int x, int y) const
-{
-    const float width = getWidth();
-    const float buttonX = (width - kButtonWidth) / 2;
-    const float buttonY = 100;
-
-    return x >= buttonX && x <= buttonX + kButtonWidth &&
-           y >= buttonY && y <= buttonY + kButtonHeight;
 }
 
 UI* createUI()
