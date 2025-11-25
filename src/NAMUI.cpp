@@ -21,6 +21,13 @@ NAMUI::NAMUI()
       bypassButton(360, 270, 120, 35, false, "Hard Bypass", kParameterHardBypass),
       loadButton(220, 320, 160, 40, "Load Model")
 {
+    // Load font for text rendering
+#ifdef DGL_NO_SHARED_RESOURCES
+    createFontFromFile("sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+#else
+    loadSharedResources();
+#endif
+
     setGeometryConstraints(kUIWidth, kUIHeight, true);
 }
 
