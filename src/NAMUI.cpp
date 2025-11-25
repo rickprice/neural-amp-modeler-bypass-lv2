@@ -13,11 +13,11 @@ NAMUI::NAMUI()
     : UI(kUIWidth, kUIHeight),
       fInputLevel(0.0f),
       fOutputLevel(0.0f),
-      fEnabled(1.0f),
+      fEnabled(0.0f),  // 0 = not bypassed (active), 1 = bypassed
       fHardBypass(0.0f),
       inputKnob(150, 150, 80, -20.0f, 20.0f, 0.0f, "Input", kParameterInputLevel),
       outputKnob(450, 150, 80, -20.0f, 20.0f, 0.0f, "Output", kParameterOutputLevel),
-      enabledButton(120, 270, 120, 35, true, "Enabled", kParameterEnabled),
+      enabledButton(120, 270, 120, 35, false, "Bypass", kParameterEnabled),  // Inverted: false = active
       bypassButton(360, 270, 120, 35, false, "Hard Bypass", kParameterHardBypass),
       loadButton(220, 320, 160, 40, "Load Model")
 {
@@ -37,25 +37,44 @@ NAMUI::~NAMUI()
 
 void NAMUI::parameterChanged(uint32_t index, float value)
 {
+    bool needsRepaint = false;
+
     switch (index) {
     case kParameterInputLevel:
-        fInputLevel = value;
-        inputKnob.value = value;
+        if (fInputLevel != value) {
+            fInputLevel = value;
+            inputKnob.value = value;
+            needsRepaint = true;
+        }
         break;
     case kParameterOutputLevel:
-        fOutputLevel = value;
-        outputKnob.value = value;
+        if (fOutputLevel != value) {
+            fOutputLevel = value;
+            outputKnob.value = value;
+            needsRepaint = true;
+        }
         break;
     case kParameterEnabled:
-        fEnabled = value;
-        enabledButton.value = (value >= 0.5f);
+        std::fprintf(stderr, "NAM UI: parameterChanged - bypass index=%u value=%f\n", index, value);
+        if (fEnabled != value) {
+            fEnabled = value;
+            enabledButton.value = (value >= 0.5f);  // value is bypass: 1.0 = bypassed (button ON), 0.0 = active (button OFF)
+            needsRepaint = true;
+            std::fprintf(stderr, "NAM UI: Updated button state to %d\n", enabledButton.value);
+        }
         break;
     case kParameterHardBypass:
-        fHardBypass = value;
-        bypassButton.value = (value >= 0.5f);
+        if (fHardBypass != value) {
+            fHardBypass = value;
+            bypassButton.value = (value >= 0.5f);
+            needsRepaint = true;
+        }
         break;
     }
-    repaint();
+
+    if (needsRepaint) {
+        repaint();
+    }
 }
 
 void NAMUI::stateChanged(const char* key, const char* value)
@@ -88,25 +107,31 @@ bool NAMUI::onMouse(const MouseEvent& ev)
             inputKnob.dragging = true;
             inputKnob.dragStartY = my;
             inputKnob.dragStartValue = inputKnob.value;
+            editParameter(kParameterInputLevel, true);
             return true;
         }
         if (outputKnob.contains(mx, my)) {
             outputKnob.dragging = true;
             outputKnob.dragStartY = my;
             outputKnob.dragStartValue = outputKnob.value;
+            editParameter(kParameterOutputLevel, true);
             return true;
         }
 
-        // Check toggle buttons
+        // Check toggle buttons (Bypass button: ON = bypassed, OFF = active)
         if (enabledButton.contains(mx, my)) {
             enabledButton.value = !enabledButton.value;
+            editParameter(kParameterEnabled, true);
             setParameterValue(kParameterEnabled, enabledButton.value ? 1.0f : 0.0f);
+            editParameter(kParameterEnabled, false);
             repaint();
             return true;
         }
         if (bypassButton.contains(mx, my)) {
             bypassButton.value = !bypassButton.value;
+            editParameter(kParameterHardBypass, true);
             setParameterValue(kParameterHardBypass, bypassButton.value ? 1.0f : 0.0f);
+            editParameter(kParameterHardBypass, false);
             repaint();
             return true;
         }
@@ -120,10 +145,12 @@ bool NAMUI::onMouse(const MouseEvent& ev)
         // Release knobs
         if (inputKnob.dragging) {
             inputKnob.dragging = false;
+            editParameter(kParameterInputLevel, false);
             return true;
         }
         if (outputKnob.dragging) {
             outputKnob.dragging = false;
+            editParameter(kParameterOutputLevel, false);
             return true;
         }
     }

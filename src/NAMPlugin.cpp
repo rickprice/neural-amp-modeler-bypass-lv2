@@ -13,7 +13,7 @@ NAMPlugin::NAMPlugin()
     : Plugin(kParameterCount, 0, 1), // parameters, programs, states
       fInputLevel(0.0f),
       fOutputLevel(0.0f),
-      fEnabled(1.0f),
+      fEnabled(0.0f),  // Default: not bypassed
       fHardBypass(0.0f),
       currentModel(nullptr),
       sampleRate(getSampleRate()),
@@ -73,10 +73,10 @@ void NAMPlugin::initParameter(uint32_t index, Parameter& parameter)
         break;
 
     case kParameterEnabled:
-        parameter.name = "Enabled";
-        parameter.symbol = "enabled";
+        parameter.name = "Bypass";
+        parameter.symbol = "bypass";
         parameter.hints |= kParameterIsBoolean;
-        parameter.ranges.def = 1.0f;
+        parameter.ranges.def = 0.0f;  // Default: not bypassed (active)
         parameter.ranges.min = 0.0f;
         parameter.ranges.max = 1.0f;
         parameter.designation = kParameterDesignationBypass;
@@ -176,38 +176,14 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
     const float* in = inputs[0];
     float* out = outputs[0];
 
-    // ========== Bypass State Management ==========
-    const bool bypassed = fEnabled < 0.5f;
-    const bool hardBypassed = fHardBypass >= 0.5f;
+    // Check bypass state (fEnabled is actually bypass: 1.0 = bypassed, 0.0 = active)
+    const bool bypassed = fEnabled >= 0.5f;
 
-    // Detect bypass state change
-    if (bypassed != previousBypassState) {
-        previousBypassState = bypassed;
-        if (!bypassed) {
-            warmupSamplesRemaining = warmupSamplesTotal;
-        }
-    }
-
-    // Hard bypass early exit
-    if (bypassed && hardBypassed && bypassFadePosition >= 1.0f) {
+    // If bypassed, just copy input to output
+    if (bypassed) {
         std::copy(in, in + frames, out);
         return;
     }
-
-    // Update bypass fade position
-    if (bypassed && bypassFadePosition < 1.0f) {
-        bypassFadePosition = std::min(1.0f, bypassFadePosition + (fadeIncrement * frames));
-    } else if (!bypassed && bypassFadePosition > 0.0f) {
-        if (warmupSamplesRemaining > 0) {
-            bypassFadePosition = 1.0f;
-            warmupSamplesRemaining = (warmupSamplesRemaining > frames)
-                ? (warmupSamplesRemaining - frames) : 0;
-        } else {
-            bypassFadePosition = std::max(0.0f, bypassFadePosition - (fadeIncrement * frames));
-        }
-    }
-
-    targetBypassGain = bypassFadePosition;
 
     // ========== Calculate Target Gain Values ==========
     float modelInputAdjustmentDB = 0.0f;
@@ -231,46 +207,17 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
     }
     inputLevel = inGain;
 
-    // ========== Store to Delay Buffer ==========
-    const size_t delaySize = inputDelayBuffer.size();
-    size_t writePos = delayBufferWritePos;
-
-    for (uint32_t i = 0; i < frames; i++) {
-        inputDelayBuffer[writePos] = out[i];
-        writePos++;
-        if (writePos >= delaySize)
-            writePos = 0;
-    }
-    delayBufferWritePos = writePos;
-
     // ========== Process Neural Model ==========
     if (currentModel != nullptr) {
         currentModel->Process(out, out, frames);
     }
 
-    // ========== Apply Output Gain and Mix with Dry ==========
-    size_t readPos = (delayBufferWritePos + delaySize - maxBufferSize - frames) % delaySize;
-
+    // ========== Apply Output Gain ==========
     float outGain = outputLevel;
-    float mixGain = targetBypassGain;
 
     for (uint32_t i = 0; i < frames; i++) {
-        // Smooth gains
         outGain += smoothCoeff * (targetOutputLevel - outGain);
-        mixGain += smoothCoeff * (targetBypassGain - mixGain);
-
-        // Calculate wet/dry mix
-        const float wetGain = (mixGain > 0.95f) ? 0.0f : (1.0f - mixGain);
-        const float dryGain = 1.0f - wetGain;
-
-        // Mix signals
-        const float wet = out[i] * outGain * wetGain;
-        const float dry = inputDelayBuffer[readPos] * dryGain;
-        out[i] = wet + dry;
-
-        readPos++;
-        if (readPos >= delaySize)
-            readPos = 0;
+        out[i] *= outGain;
     }
 
     outputLevel = outGain;
@@ -310,6 +257,12 @@ void NAMPlugin::loadModel(const char* path)
         if (newModel != nullptr) {
             currentModel.reset(newModel);
             currentModelPath = path;
+
+            // Reset processing state when model changes
+            prevDCInput = 0.0f;
+            prevDCOutput = 0.0f;
+            std::fill(inputDelayBuffer.begin(), inputDelayBuffer.end(), 0.0f);
+            delayBufferWritePos = 0;
         }
     } catch (const std::exception& e) {
         // Model loading failed
