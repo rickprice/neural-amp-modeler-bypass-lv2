@@ -13,7 +13,7 @@ NAMPlugin::NAMPlugin()
     : Plugin(kParameterCount, 0, 1), // parameters, programs, states
       fInputLevel(0.0f),
       fOutputLevel(0.0f),
-      fEnabled(0.0f),  // Default: not bypassed
+      fEnabled(1.0f),  // Default: enabled (active)
       fHardBypass(0.0f),
       currentModel(nullptr),
       sampleRate(getSampleRate()),
@@ -21,25 +21,18 @@ NAMPlugin::NAMPlugin()
       prevDCOutput(0.0f),
       previousBypassState(false),
       bypassFadePosition(0.0f),
-      delayBufferWritePos(0),
-      warmupSamplesRemaining(0),
+      // delayBufferWritePos(0),
+      // warmupSamplesRemaining(0),
       fadeIncrement(0.0f),
-      warmupSamplesTotal(0),
+      // warmupSamplesTotal(0),
       targetInputLevel(1.0f),
       targetOutputLevel(1.0f),
       targetBypassGain(0.0f),
       inputLevel(1.0f),
       outputLevel(1.0f),
-      maxBufferSize(512)
+      maxBufferSize(4096)
 {
     currentModelPath.reserve(1024);
-
-    // Pre-calculate fade coefficients
-    fadeIncrement = 1.0f / ((FADE_TIME_MS / 1000.0f) * static_cast<float>(sampleRate));
-    warmupSamplesTotal = static_cast<size_t>((WARMUP_TIME_MS / 1000.0) * sampleRate);
-
-    // Initialize delay buffer
-    updateDelayBufferSize();
 
     // Set default max buffer size
     NeuralAudio::NeuralModel::SetDefaultMaxAudioBufferSize(maxBufferSize);
@@ -73,10 +66,11 @@ void NAMPlugin::initParameter(uint32_t index, Parameter& parameter)
         break;
 
     case kParameterEnabled:
-        parameter.name = "Bypass";
-        parameter.symbol = "bypass";
+        // DPF will override name to "Enabled" and symbol to "lv2_enabled"
+        // when using kParameterDesignationBypass
+        // Semantics: 1.0 = enabled (active), 0.0 = disabled (bypassed)
         parameter.hints |= kParameterIsBoolean;
-        parameter.ranges.def = 0.0f;  // Default: not bypassed (active)
+        parameter.ranges.def = 1.0f;  // Default: enabled (active)
         parameter.ranges.min = 0.0f;
         parameter.ranges.max = 1.0f;
         parameter.designation = kParameterDesignationBypass;
@@ -122,6 +116,7 @@ float NAMPlugin::getParameterValue(uint32_t index) const
 
 void NAMPlugin::setParameterValue(uint32_t index, float value)
 {
+    std::fprintf(stderr, "NAM DSP: setParameterValue index=%u value=%f\n", index, value);
     switch (index) {
     case kParameterInputLevel:
         fInputLevel = value;
@@ -131,6 +126,7 @@ void NAMPlugin::setParameterValue(uint32_t index, float value)
         break;
     case kParameterEnabled:
         fEnabled = value;
+        std::fprintf(stderr, "NAM DSP: Enabled set to %f (1=active, 0=bypassed)\n", value);
         break;
     case kParameterHardBypass:
         fHardBypass = value;
@@ -160,11 +156,6 @@ void NAMPlugin::activate()
     prevDCOutput = 0.0f;
     previousBypassState = false;
     bypassFadePosition = 0.0f;
-    warmupSamplesRemaining = 0;
-
-    // Clear delay buffer
-    std::fill(inputDelayBuffer.begin(), inputDelayBuffer.end(), 0.0f);
-    delayBufferWritePos = 0;
 }
 
 void NAMPlugin::deactivate()
@@ -176,8 +167,26 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
     const float* in = inputs[0];
     float* out = outputs[0];
 
-    // Check bypass state (fEnabled is actually bypass: 1.0 = bypassed, 0.0 = active)
-    const bool bypassed = fEnabled >= 0.5f;
+    // Debug buffer size
+    static int debugCounter7 = 0;
+    static uint32_t lastFrames = 0;
+    if (frames != lastFrames) {
+        std::fprintf(stderr, "NAM DSP: Buffer size changed to %u (maxBufferSize=%d)\n", frames, maxBufferSize);
+        lastFrames = frames;
+    }
+
+    // Debug input level
+    static int debugCounter5 = 0;
+    if (debugCounter5++ % 100 == 0) {
+        float maxInput = 0.0f;
+        for (uint32_t i = 0; i < frames; i++) {
+            maxInput = std::max(maxInput, std::abs(in[i]));
+        }
+        std::fprintf(stderr, "NAM DSP: Raw input max sample = %f, fEnabled = %f, frames = %u\n", maxInput, fEnabled, frames);
+    }
+
+    // Check enabled state: 1.0 = enabled (active), 0.0 = disabled (bypassed)
+    const bool bypassed = fEnabled < 0.5f;
 
     // If bypassed, just copy input to output
     if (bypassed) {
@@ -192,10 +201,21 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
     if (currentModel != nullptr) {
         modelInputAdjustmentDB = currentModel->GetRecommendedInputDBAdjustment();
         modelOutputAdjustmentDB = currentModel->GetRecommendedOutputDBAdjustment();
+        static int debugCounter = 0;
+        if (debugCounter++ % 100 == 0) {
+            std::fprintf(stderr, "NAM DSP: Model adjustments - input=%f dB, output=%f dB\n",
+                        modelInputAdjustmentDB, modelOutputAdjustmentDB);
+        }
     }
 
     targetInputLevel = std::pow(10.0f, (fInputLevel + modelInputAdjustmentDB) * 0.05f);
     targetOutputLevel = std::pow(10.0f, (fOutputLevel + modelOutputAdjustmentDB) * 0.05f);
+
+    static int debugCounter2 = 0;
+    if (debugCounter2++ % 100 == 0) {
+        std::fprintf(stderr, "NAM DSP: Target gains - input=%f, output=%f (current: in=%f, out=%f)\n",
+                    targetInputLevel, targetOutputLevel, inputLevel, outputLevel);
+    }
 
     // ========== Apply Input Gain ==========
     const float smoothCoeff = SMOOTH_COEFF;
@@ -209,7 +229,25 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
 
     // ========== Process Neural Model ==========
     if (currentModel != nullptr) {
-        currentModel->Process(out, out, frames);
+        static int debugCounter3 = 0;
+        if (debugCounter3++ % 100 == 0) {
+            float maxIn = 0.0f;
+            for (uint32_t i = 0; i < frames; i++) {
+                maxIn = std::max(maxIn, std::abs(out[i]));
+            }
+            std::fprintf(stderr, "NAM DSP: Before model processing, max sample = %f\n", maxIn);
+        }
+
+        // currentModel->Process(out, out, frames);
+
+        static int debugCounter4 = 0;
+        if (debugCounter4++ % 100 == 0) {
+            float maxOut = 0.0f;
+            for (uint32_t i = 0; i < frames; i++) {
+                maxOut = std::max(maxOut, std::abs(out[i]));
+            }
+            std::fprintf(stderr, "NAM DSP: After model processing, max sample = %f\n", maxOut);
+        }
     }
 
     // ========== Apply Output Gain ==========
@@ -221,51 +259,51 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
     }
 
     outputLevel = outGain;
+
+    // Debug final output
+    static int debugCounter6 = 0;
+    if (debugCounter6++ % 100 == 0) {
+        float maxFinal = 0.0f;
+        for (uint32_t i = 0; i < frames; i++) {
+            maxFinal = std::max(maxFinal, std::abs(out[i]));
+        }
+        std::fprintf(stderr, "NAM DSP: FINAL OUTPUT max sample = %f\n", maxFinal);
+    }
+
+    std::copy(in, in + frames, out);
 }
 
 void NAMPlugin::sampleRateChanged(double newSampleRate)
 {
     sampleRate = newSampleRate;
-
-    // Recalculate fade coefficients
-    fadeIncrement = 1.0f / ((FADE_TIME_MS / 1000.0f) * static_cast<float>(sampleRate));
-    warmupSamplesTotal = static_cast<size_t>((WARMUP_TIME_MS / 1000.0) * sampleRate);
-
-    // Update delay buffer
-    updateDelayBufferSize();
-}
-
-void NAMPlugin::updateDelayBufferSize()
-{
-    size_t fadeTimeSamples = static_cast<size_t>((FADE_TIME_MS / 1000.0) * sampleRate);
-    size_t delayBufferSize = fadeTimeSamples + maxBufferSize;
-
-    inputDelayBuffer.resize(delayBufferSize, 0.0f);
-    delayBufferWritePos = 0;
 }
 
 void NAMPlugin::loadModel(const char* path)
 {
     if (!path || std::strlen(path) == 0) {
+        std::fprintf(stderr, "NAM DSP: Clearing model\n");
         currentModel.reset();
         currentModelPath.clear();
         return;
     }
 
+    std::fprintf(stderr, "NAM DSP: Attempting to load model from: %s\n", path);
     try {
         auto newModel = NeuralAudio::NeuralModel::CreateFromFile(path);
         if (newModel != nullptr) {
             currentModel.reset(newModel);
             currentModelPath = path;
+            std::fprintf(stderr, "NAM DSP: Model loaded successfully\n");
 
             // Reset processing state when model changes
             prevDCInput = 0.0f;
             prevDCOutput = 0.0f;
-            std::fill(inputDelayBuffer.begin(), inputDelayBuffer.end(), 0.0f);
-            delayBufferWritePos = 0;
+        } else {
+            std::fprintf(stderr, "NAM DSP: Model creation returned nullptr\n");
         }
     } catch (const std::exception& e) {
         // Model loading failed
+        std::fprintf(stderr, "NAM DSP: Model loading failed: %s\n", e.what());
         currentModel.reset();
         currentModelPath.clear();
     }

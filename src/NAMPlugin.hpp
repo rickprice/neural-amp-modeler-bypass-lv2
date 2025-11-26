@@ -92,11 +92,6 @@ private:
     // Bypass crossfade state
     bool previousBypassState;
     float bypassFadePosition;
-    std::vector<float> inputDelayBuffer;
-    size_t delayBufferWritePos;
-    static constexpr size_t FADE_TIME_MS = 20;
-    static constexpr size_t WARMUP_TIME_MS = 40;
-    size_t warmupSamplesRemaining;
 
     // Pre-calculated coefficients
     float fadeIncrement;
@@ -116,7 +111,6 @@ private:
     int32_t maxBufferSize;
 
     // Private methods
-    void updateDelayBufferSize();
     void loadModel(const char* path);
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NAMPlugin)

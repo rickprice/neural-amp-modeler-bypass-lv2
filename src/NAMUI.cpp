@@ -13,11 +13,11 @@ NAMUI::NAMUI()
     : UI(kUIWidth, kUIHeight),
       fInputLevel(0.0f),
       fOutputLevel(0.0f),
-      fEnabled(0.0f),  // 0 = not bypassed (active), 1 = bypassed
+      fEnabled(1.0f),  // 1 = enabled (active), 0 = disabled (bypassed)
       fHardBypass(0.0f),
       inputKnob(150, 150, 80, -20.0f, 20.0f, 0.0f, "Input", kParameterInputLevel),
       outputKnob(450, 150, 80, -20.0f, 20.0f, 0.0f, "Output", kParameterOutputLevel),
-      enabledButton(120, 270, 120, 35, false, "Bypass", kParameterEnabled),  // Inverted: false = active
+      enabledButton(120, 270, 120, 35, true, "Enabled", kParameterEnabled),  // true = enabled by default
       bypassButton(360, 270, 120, 35, false, "Hard Bypass", kParameterHardBypass),
       loadButton(220, 320, 160, 40, "Load Model")
 {
@@ -37,6 +37,7 @@ NAMUI::~NAMUI()
 
 void NAMUI::parameterChanged(uint32_t index, float value)
 {
+    std::fprintf(stderr, "NAM UI: parameterChanged index=%u value=%f\n", index, value);
     bool needsRepaint = false;
 
     switch (index) {
@@ -55,12 +56,12 @@ void NAMUI::parameterChanged(uint32_t index, float value)
         }
         break;
     case kParameterEnabled:
-        std::fprintf(stderr, "NAM UI: parameterChanged - bypass index=%u value=%f\n", index, value);
+        std::fprintf(stderr, "NAM UI: parameterChanged enabled - old=%f new=%f\n", fEnabled, value);
         if (fEnabled != value) {
             fEnabled = value;
-            enabledButton.value = (value >= 0.5f);  // value is bypass: 1.0 = bypassed (button ON), 0.0 = active (button OFF)
+            enabledButton.value = (value >= 0.5f);  // value is enabled: 1.0 = enabled (button ON), 0.0 = disabled (button OFF)
             needsRepaint = true;
-            std::fprintf(stderr, "NAM UI: Updated button state to %d\n", enabledButton.value);
+            std::fprintf(stderr, "NAM UI: Updated enabled button to %d\n", enabledButton.value);
         }
         break;
     case kParameterHardBypass:
@@ -118,11 +119,13 @@ bool NAMUI::onMouse(const MouseEvent& ev)
             return true;
         }
 
-        // Check toggle buttons (Bypass button: ON = bypassed, OFF = active)
+        // Check toggle buttons (Enabled button: ON = enabled/active, OFF = disabled/bypassed)
         if (enabledButton.contains(mx, my)) {
             enabledButton.value = !enabledButton.value;
+            float newValue = enabledButton.value ? 1.0f : 0.0f;
+            std::fprintf(stderr, "NAM UI: Enabled button clicked, setting to %f\n", newValue);
             editParameter(kParameterEnabled, true);
-            setParameterValue(kParameterEnabled, enabledButton.value ? 1.0f : 0.0f);
+            setParameterValue(kParameterEnabled, newValue);
             editParameter(kParameterEnabled, false);
             repaint();
             return true;
@@ -171,6 +174,7 @@ bool NAMUI::onMotion(const MotionEvent& ev)
         newValue = std::max(inputKnob.min, std::min(inputKnob.max, newValue));
         if (newValue != inputKnob.value) {
             inputKnob.value = newValue;
+            std::fprintf(stderr, "NAM UI: Input knob dragged to %f\n", newValue);
             setParameterValue(kParameterInputLevel, newValue);
             needsRepaint = true;
         }
@@ -181,6 +185,7 @@ bool NAMUI::onMotion(const MotionEvent& ev)
         newValue = std::max(outputKnob.min, std::min(outputKnob.max, newValue));
         if (newValue != outputKnob.value) {
             outputKnob.value = newValue;
+            std::fprintf(stderr, "NAM UI: Output knob dragged to %f\n", newValue);
             setParameterValue(kParameterOutputLevel, newValue);
             needsRepaint = true;
         }
