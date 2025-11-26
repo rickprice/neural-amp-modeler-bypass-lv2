@@ -1,7 +1,12 @@
 #include "NAMPlugin.hpp"
 #include <algorithm>
+#include <cfenv>
 #include <cmath>
 #include <cstring>
+
+#include <NeuralAudio/NeuralModel.h>
+
+#include "architecture.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -237,6 +242,18 @@ void NAMPlugin::run(const float** inputs, float** outputs, uint32_t frames)
             }
             std::fprintf(stderr, "NAM DSP: Before model processing, max sample = %f\n", maxIn);
         }
+
+#ifdef DISABLE_DENORMALS // Disable floating point denormals
+  std::fenv_t fe_state;
+  std::feholdexcept(&fe_state);
+  disable_denormals();
+#endif
+        currentModel->Process(out, out, frames);
+
+#ifdef DISABLE_DENORMALS // restore previous floating point state
+  std::feupdateenv(&fe_state);
+#endif
+
 
         // currentModel->Process(out, out, frames);
 
