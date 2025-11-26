@@ -37,13 +37,13 @@ set(SOURCES nam_lv2.cpp
 
 set(NA_SOURCES ../deps/NeuralAudio/NeuralAudio/NeuralModel.h)
 
-add_library(neural_amp_modeler SHARED ${SOURCES} ${NA_SOURCES})
+add_library(neural_amp_modeler_bypass SHARED ${SOURCES} ${NA_SOURCES})
 
-target_include_directories(neural_amp_modeler PUBLIC ../deps/NeuralAudio)
-target_include_directories(neural_amp_modeler PUBLIC ../deps/lv2/include)
-target_include_directories(neural_amp_modeler PUBLIC ../deps/denormal)
+target_include_directories(neural_amp_modeler_bypass PUBLIC ../deps/NeuralAudio)
+target_include_directories(neural_amp_modeler_bypass PUBLIC ../deps/lv2/include)
+target_include_directories(neural_amp_modeler_bypass PUBLIC ../deps/denormal)
 
-target_link_libraries(neural_amp_modeler PRIVATE NeuralAudio)
+target_link_libraries(neural_amp_modeler_bypass PRIVATE NeuralAudio)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCES})
 source_group(NAM ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NA_SOURCES})
@@ -54,7 +54,7 @@ if (DISABLE_DENORMALS)
 	add_definitions(-DDISABLE_DENORMALS)
 endif (DISABLE_DENORMALS)
 
-set_target_properties(neural_amp_modeler
+set_target_properties(neural_amp_modeler_bypass
 	PROPERTIES
 	CXX_VISIBILITY_PRESET hidden
 	C_VISIBILITY_PRESET hidden
@@ -64,10 +64,10 @@ set_target_properties(neural_amp_modeler
 )
 
 # Use version script to only export lv2_descriptor symbol
-target_link_options(neural_amp_modeler PRIVATE "-Wl,--version-script=${CMAKE_SOURCE_DIR}/lv2_symbol_export.version")
+target_link_options(neural_amp_modeler_bypass PRIVATE "-Wl,--version-script=${CMAKE_SOURCE_DIR}/lv2_symbol_export.version")
 
 # Platform
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-	target_compile_definitions(neural_amp_modeler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+	target_compile_definitions(neural_amp_modeler_bypass PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()

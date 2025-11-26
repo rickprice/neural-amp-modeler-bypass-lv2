@@ -31,7 +31,7 @@
 	doap:maintainer [
 		foaf:name "Frederick Price";
 		foaf:mbox <mailto:fprice@pricemail.ca>;
-		foaf:homepage <http://github.com/rickprice>;
+		foaf:homepage <https://github.com/rickprice/neural-amp-modeler-bypass-lv2>;
 	];
 
 	lv2:requiredFeature urid:map, work:schedule;

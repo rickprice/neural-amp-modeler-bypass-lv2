@@ -24,7 +24,7 @@
 
 #include <NeuralAudio/NeuralModel.h>
 
-#define PlUGIN_URI "http://github.com/rickprice/neural-amp-modeler-bypass-lv2"
+#define PlUGIN_URI "https://github.com/rickprice/neural-amp-modeler-bypass-lv2"
 #define MODEL_URI PlUGIN_URI "#model"
 
 namespace NAM {
