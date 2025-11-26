@@ -89,15 +89,6 @@ bool Plugin::initialize(double sampleRate,
   if (options != nullptr)
     options_set(this, options);
 
-  // Initialize delay buffer for bypass crossfading
-  update_delay_buffer_size();
-
-  // Pre-calculate fade coefficients
-  fadeIncrement =
-      1.0f / ((FADE_TIME_MS / 1000.0f) * static_cast<float>(sampleRate));
-  warmupSamplesTotal =
-      static_cast<size_t>((WARMUP_TIME_MS / 1000.0) * sampleRate);
-
   return true;
 }
 
@@ -194,19 +185,6 @@ void Plugin::set_max_buffer_size(int size) noexcept {
   maxBufferSize = size;
 
   NeuralAudio::NeuralModel::SetDefaultMaxAudioBufferSize(size);
-
-  // Update delay buffer size for bypass crossfading
-  update_delay_buffer_size();
-}
-
-void Plugin::update_delay_buffer_size() noexcept {
-  // Size = fade time + host buffer size (which represents the actual latency)
-  size_t fadeTimeSamples =
-      static_cast<size_t>((FADE_TIME_MS / 1000.0) * sampleRate);
-  size_t delayBufferSize = fadeTimeSamples + maxBufferSize;
-
-  inputDelayBuffer.resize(delayBufferSize, 0.0f);
-  delayBufferWritePos = 0;
 }
 
 // GCC-specific optimizations for the audio processing hot path
@@ -245,42 +223,14 @@ void Plugin::process(uint32_t n_samples) noexcept {
     }
   }
 
-  // ========== Bypass State Management ==========
+  // ========== Hard Bypass Check ==========
   const bool bypassed = *(ports.enabled) < 0.5f;
-  const bool hardBypassed = *(ports.hard_bypass) >= 0.5f;
 
-  // Detect bypass state change
-  if (bypassed != previousBypassState) {
-    previousBypassState = bypassed;
-    if (!bypassed) {
-      warmupSamplesRemaining = warmupSamplesTotal;
-    }
-  }
-
-  // Hard bypass early exit: skip ALL processing when fully bypassed
-  if (bypassed && hardBypassed && bypassFadePosition >= 1.0f) {
+  if (bypassed) {
+    // Hard bypass: just copy input to output
     std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
     return;
   }
-
-  // Update bypass fade position
-  if (bypassed && bypassFadePosition < 1.0f) {
-    bypassFadePosition =
-        std::min(1.0f, bypassFadePosition + (fadeIncrement * n_samples));
-  } else if (!bypassed && bypassFadePosition > 0.0f) {
-    if (warmupSamplesRemaining > 0) {
-      bypassFadePosition = 1.0f;
-      warmupSamplesRemaining = (warmupSamplesRemaining > n_samples)
-                                   ? (warmupSamplesRemaining - n_samples)
-                                   : 0;
-    } else {
-      bypassFadePosition =
-          std::max(0.0f, bypassFadePosition - (fadeIncrement * n_samples));
-    }
-  }
-
-  // Update target bypass gain
-  targetBypassGain = bypassFadePosition;
 
   // ========== Calculate Target Gain Values ==========
   const float *__restrict in = ports.audio_in;
@@ -310,49 +260,18 @@ void Plugin::process(uint32_t n_samples) noexcept {
   }
   inputLevel = inGain;
 
-  // ========== Store to Delay Buffer (SIMD-friendly) ==========
-  const size_t delaySize = inputDelayBuffer.size();
-  size_t writePos = delayBufferWritePos;
-
-#pragma GCC ivdep
-  for (uint32_t i = 0; i < n_samples; i++) {
-    inputDelayBuffer[writePos] = out[i];
-    writePos++;
-    if (writePos >= delaySize)
-      writePos = 0;
-  }
-  delayBufferWritePos = writePos;
-
   // ========== Process Neural Model ==========
   if (currentModel != nullptr) {
     currentModel->Process(out, out, n_samples);
   }
 
-  // ========== Apply Output Gain and Mix with Dry (SIMD-friendly) ==========
-  size_t readPos =
-      (delayBufferWritePos + delaySize - maxBufferSize - n_samples) % delaySize;
-
+  // ========== Apply Output Gain (SIMD-friendly) ==========
   float outGain = outputLevel;
-  float mixGain = targetBypassGain;
 
 #pragma GCC ivdep
   for (uint32_t i = 0; i < n_samples; i++) {
-    // Smooth gains
     outGain += smoothCoeff * (targetOutputLevel - outGain);
-    mixGain += smoothCoeff * (targetBypassGain - mixGain);
-
-    // Calculate wet/dry mix
-    const float wetGain = (mixGain > 0.95f) ? 0.0f : (1.0f - mixGain);
-    const float dryGain = 1.0f - wetGain;
-
-    // Mix signals
-    const float wet = out[i] * outGain * wetGain;
-    const float dry = inputDelayBuffer[readPos] * dryGain;
-    out[i] = wet + dry;
-
-    readPos++;
-    if (readPos >= delaySize)
-      readPos = 0;
+    out[i] = out[i] * outGain;
   }
 
   outputLevel = outGain;

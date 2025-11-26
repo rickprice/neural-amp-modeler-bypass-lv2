@@ -58,7 +58,6 @@ public:
     float *input_level;
     float *output_level;
     float *enabled;
-    float *hard_bypass;
   };
 
   Ports ports = {};
@@ -74,24 +73,9 @@ public:
   float prevDCInput = 0;
   float prevDCOutput = 0;
 
-  // Bypass crossfade state
-  bool previousBypassState = false;
-  float bypassFadePosition =
-      0.0f; // 0.0 = fully processed, 1.0 = fully bypassed
-  std::vector<float> inputDelayBuffer;
-  size_t delayBufferWritePos = 0;
-  static constexpr size_t FADE_TIME_MS = 20;
-  static constexpr size_t WARMUP_TIME_MS = 40; // 2x fade time for model warmup
-  size_t warmupSamplesRemaining = 0;
-
-  // Pre-calculated coefficients (set in initialize())
-  float fadeIncrement = 0.0f;
-  size_t warmupSamplesTotal = 0;
-
   // Target values for gain smoothing
   float targetInputLevel = 1.0f;
   float targetOutputLevel = 1.0f;
-  float targetBypassGain = 0.0f;
 
   // Smoothing coefficient for all gain transitions
   static constexpr float SMOOTH_COEFF = 0.001f;
@@ -151,7 +135,5 @@ private:
   float outputLevel =
       1.0f; // Initialize to unity gain to avoid silence on startup
   int32_t maxBufferSize = 512;
-
-  void update_delay_buffer_size() noexcept;
 };
 } // namespace NAM
