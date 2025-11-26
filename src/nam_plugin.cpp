@@ -225,8 +225,9 @@ void Plugin::process(uint32_t n_samples) noexcept {
 
   // ========== Hard Bypass Check ==========
   const bool bypassed = *(ports.enabled) < 0.5f;
+  const bool hardBypassed = *(ports.hard_bypass) >= 0.5f;
 
-  if (bypassed) {
+  if (bypassed && hardBypassed) {
     // Hard bypass: just copy input to output
     std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
     return;
