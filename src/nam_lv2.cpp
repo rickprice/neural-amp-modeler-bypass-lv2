@@ -76,7 +76,7 @@ static const void *extension_data(const char *uri) {
 }
 
 static const LV2_Descriptor descriptor = {
-    "http://github.com/rickprice/neural-amp-modeler-bypass-lv2",
+    PlUGIN_URI,
     instantiate,
     connect_port,
     activate,
