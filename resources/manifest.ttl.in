@@ -13,4 +13,13 @@
 	a ui:X11UI;
 	ui:binary <neural_amp_modeler_bypass_ui@CMAKE_SHARED_MODULE_SUFFIX@>;
 	lv2:requiredFeature ui:idleInterface;
-	lv2:extensionData ui:idleInterface .
+	lv2:extensionData ui:idleInterface;
+	ui:portNotification [
+		ui:plugin <@NAM_LV2_ID@>;
+		lv2:symbol "control";
+		ui:protocol ui:floatProtocol
+	], [
+		ui:plugin <@NAM_LV2_ID@>;
+		lv2:symbol "notify";
+		ui:protocol ui:floatProtocol
+	] .

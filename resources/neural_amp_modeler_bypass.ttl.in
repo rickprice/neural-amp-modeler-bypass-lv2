@@ -50,6 +50,7 @@ A large collection of models is available at https://tonehunt.org
 """;
 
 	patch:writable <@NAM_LV2_ID@#model>;
+	patch:readable <@NAM_LV2_ID@#model>;
 
 	# Control
 	lv2:port [
