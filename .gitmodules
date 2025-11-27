@@ -4,3 +4,6 @@
 [submodule "deps/NeuralAudio"]
 	path = deps/NeuralAudio
 	url = https://github.com/mikeoliphant/NeuralAudio
+[submodule "deps/pugl"]
+	path = deps/pugl
+	url = https://github.com/lv2/pugl.git

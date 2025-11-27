@@ -27,7 +27,8 @@ add_subdirectory(src)
 # create neural_amp_modeler_bypass.lv2
 add_custom_target(copy_binaries ALL
 	${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_bypass>" neural_amp_modeler_bypass.lv2/
-	DEPENDS neural_amp_modeler_bypass
+	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_bypass_ui>" neural_amp_modeler_bypass.lv2/
+	DEPENDS neural_amp_modeler_bypass neural_amp_modeler_bypass_ui
 )
 
 file(COPY resources/modgui.ttl DESTINATION neural_amp_modeler_bypass.lv2)
