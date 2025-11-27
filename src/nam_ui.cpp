@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include <cairo/cairo.h>
+#include <lv2/atom/util.h>
 
 #define MODEL_URI "https://github.com/rickprice/neural-amp-modeler-bypass-lv2#model"
 
@@ -55,7 +56,9 @@ bool PluginUI::initialize(LV2UI_Write_Function write_fn,
   atom_Path = map->map(map->handle, LV2_ATOM__Path);
   atom_URID = map->map(map->handle, LV2_ATOM__URID);
   atom_Float = map->map(map->handle, LV2_ATOM__Float);
+  atom_Object = map->map(map->handle, LV2_ATOM__Object);
   patch_Set = map->map(map->handle, LV2_PATCH__Set);
+  patch_Get = map->map(map->handle, LV2_PATCH__Get);
   patch_property = map->map(map->handle, LV2_PATCH__property);
   patch_value = map->map(map->handle, LV2_PATCH__value);
   model_uri = map->map(map->handle, MODEL_URI);
@@ -85,11 +88,37 @@ bool PluginUI::initialize(LV2UI_Write_Function write_fn,
 
   puglShow(view, PUGL_SHOW_RAISE);
 
+  // Request current model path from plugin
+  request_current_model();
+
   return true;
 }
 
 void PluginUI::port_event(uint32_t port_index, uint32_t buffer_size,
                           uint32_t format, const void* buffer) {
+  // Handle atom messages (model path updates)
+  if (port_index == 1 && format == atom_Object) {
+    const LV2_Atom_Object* obj = (const LV2_Atom_Object*)buffer;
+
+    if (obj->body.otype == patch_Set) {
+      // Extract the model path from the patch:Set message
+      const LV2_Atom* property = NULL;
+      const LV2_Atom* value = NULL;
+
+      lv2_atom_object_get(obj, patch_property, &property, patch_value, &value, 0);
+
+      if (property && property->type == atom_URID &&
+          ((const LV2_Atom_URID*)property)->body == model_uri &&
+          value && value->type == atom_Path) {
+        const char* path = (const char*)(value + 1);
+        fprintf(stderr, "[NAM UI] Received model path from plugin: %s\n", path);
+        current_model_path = path;
+        puglObscureView(view);
+      }
+    }
+    return;
+  }
+
   // Update port values when they change
   switch (port_index) {
     case 4: // input_level
@@ -472,6 +501,8 @@ void PluginUI::open_file_dialog() {
 void PluginUI::send_model_path(const char* path) {
   if (!write_function) return;
 
+  fprintf(stderr, "[NAM UI] Sending model path to plugin: %s\n", path);
+
   // Build an atom message to set the model path
   uint8_t buffer[1024];
   LV2_Atom_Forge forge;
@@ -485,6 +516,30 @@ void PluginUI::send_model_path(const char* path) {
   lv2_atom_forge_urid(&forge, model_uri);
   lv2_atom_forge_key(&forge, patch_value);
   lv2_atom_forge_path(&forge, path, strlen(path) + 1);
+
+  lv2_atom_forge_pop(&forge, &frame);
+
+  // Send to plugin via control port (port 0)
+  write_function(controller, 0, lv2_atom_total_size(msg),
+                 map->map(map->handle, LV2_ATOM__eventTransfer), msg);
+}
+
+void PluginUI::request_current_model() {
+  if (!write_function) return;
+
+  fprintf(stderr, "[NAM UI] Requesting current model path from plugin\n");
+
+  // Build a patch:Get message to request the current model path
+  uint8_t buffer[256];
+  LV2_Atom_Forge forge;
+  lv2_atom_forge_init(&forge, map);
+  lv2_atom_forge_set_buffer(&forge, buffer, sizeof(buffer));
+
+  LV2_Atom_Forge_Frame frame;
+  LV2_Atom* msg = (LV2_Atom*)lv2_atom_forge_object(&forge, &frame, 0, patch_Get);
+
+  lv2_atom_forge_key(&forge, patch_property);
+  lv2_atom_forge_urid(&forge, model_uri);
 
   lv2_atom_forge_pop(&forge, &frame);
 

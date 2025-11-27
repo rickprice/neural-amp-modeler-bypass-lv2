@@ -70,6 +70,7 @@ private:
   void send_control_value(uint32_t port, float value);
   void open_file_dialog();
   void send_model_path(const char* path);
+  void request_current_model();
 
   Widget* get_widget_at(double x, double y);
 
@@ -84,7 +85,9 @@ private:
   LV2_URID atom_Path;
   LV2_URID atom_URID;
   LV2_URID atom_Float;
+  LV2_URID atom_Object;
   LV2_URID patch_Set;
+  LV2_URID patch_Get;
   LV2_URID patch_property;
   LV2_URID patch_value;
   LV2_URID model_uri;
