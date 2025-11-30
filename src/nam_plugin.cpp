@@ -312,6 +312,13 @@ void Plugin::process(uint32_t n_samples) noexcept {
 
   outputLevel = outGain;
 
+  // If we are only bypassed, we need to copy the input to the output, but we need to still
+  // do all the processing to keep the CPU load constant
+  if (bypassed) {
+    // Soft bypass: just copy input to output
+    std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
+  }
+
   // ========== Finalize Atom Sequence ==========
   // Close the sequence frame to finalize all atom messages sent this cycle
   lv2_atom_forge_pop(&atom_forge, &sequence_frame);
