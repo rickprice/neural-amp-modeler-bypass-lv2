@@ -24,8 +24,8 @@
 
 #include <NeuralAudio/NeuralModel.h>
 
-#define PlUGIN_URI "https://github.com/rickprice/neural-amp-modeler-bypass-lv2"
-#define MODEL_URI PlUGIN_URI "#model"
+#define PLUGIN_URI "https://github.com/rickprice/neural-amp-modeler-bypass-lv2"
+#define MODEL_URI PLUGIN_URI "#model"
 
 namespace NAM {
 static constexpr unsigned int MAX_FILE_NAME = 1024;
@@ -89,6 +89,7 @@ public:
   void process(uint32_t n_samples) noexcept;
 
   void write_current_path();
+  void send_recommended_levels();
 
   static uint32_t options_get(LV2_Handle instance, LV2_Options_Option *options);
   static uint32_t options_set(LV2_Handle instance,
@@ -124,6 +125,8 @@ private:
     LV2_URID patch_value;
     LV2_URID units_frame;
     LV2_URID model_Path;
+    LV2_URID recommended_input;
+    LV2_URID recommended_output;
   };
 
   URIs uris = {};
@@ -136,5 +139,8 @@ private:
   float outputLevel =
       1.0f; // Initialize to unity gain to avoid silence on startup
   int32_t maxBufferSize = 512;
+
+  bool send_recommended_levels_flag = false;
+  bool send_model_path_flag = false;
 };
 } // namespace NAM

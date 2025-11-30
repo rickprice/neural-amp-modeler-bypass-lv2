@@ -71,6 +71,7 @@ private:
   void open_file_dialog();
   void send_model_path(const char* path);
   void request_current_model();
+  void handle_patch_message(const LV2_Atom_Object* obj);
 
   Widget* get_widget_at(double x, double y);
 
@@ -86,11 +87,14 @@ private:
   LV2_URID atom_URID;
   LV2_URID atom_Float;
   LV2_URID atom_Object;
+  LV2_URID atom_eventTransfer;
   LV2_URID patch_Set;
   LV2_URID patch_Get;
   LV2_URID patch_property;
   LV2_URID patch_value;
   LV2_URID model_uri;
+  LV2_URID recommended_input;
+  LV2_URID recommended_output;
 
   // Widgets
   Widget model_button;

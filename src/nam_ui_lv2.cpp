@@ -1,5 +1,7 @@
 #include "nam_ui.h"
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #define UI_URI "https://github.com/rickprice/neural-amp-modeler-bypass-lv2#ui"
 

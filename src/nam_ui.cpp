@@ -57,11 +57,14 @@ bool PluginUI::initialize(LV2UI_Write_Function write_fn,
   atom_URID = map->map(map->handle, LV2_ATOM__URID);
   atom_Float = map->map(map->handle, LV2_ATOM__Float);
   atom_Object = map->map(map->handle, LV2_ATOM__Object);
+  atom_eventTransfer = map->map(map->handle, LV2_ATOM__eventTransfer);
   patch_Set = map->map(map->handle, LV2_PATCH__Set);
   patch_Get = map->map(map->handle, LV2_PATCH__Get);
   patch_property = map->map(map->handle, LV2_PATCH__property);
   patch_value = map->map(map->handle, LV2_PATCH__value);
   model_uri = map->map(map->handle, MODEL_URI);
+  recommended_input = map->map(map->handle, "https://github.com/rickprice/neural-amp-modeler-bypass-lv2#recommendedInput");
+  recommended_output = map->map(map->handle, "https://github.com/rickprice/neural-amp-modeler-bypass-lv2#recommendedOutput");
 
   // Create Pugl world and view
   world = puglNewWorld(PUGL_MODULE, 0);
@@ -96,25 +99,24 @@ bool PluginUI::initialize(LV2UI_Write_Function write_fn,
 
 void PluginUI::port_event(uint32_t port_index, uint32_t buffer_size,
                           uint32_t format, const void* buffer) {
-  // Handle atom messages (model path updates)
-  if (port_index == 1 && format == atom_Object) {
-    const LV2_Atom_Object* obj = (const LV2_Atom_Object*)buffer;
+  // Handle atom messages (model path updates and recommended levels)
+  // Format can be either eventTransfer or atom_Object depending on host
+  if (port_index == 1 && (format == atom_eventTransfer || format == atom_Object)) {
+    const LV2_Atom* atom = (const LV2_Atom*)buffer;
 
-    if (obj->body.otype == patch_Set) {
-      // Extract the model path from the patch:Set message
-      const LV2_Atom* property = NULL;
-      const LV2_Atom* value = NULL;
-
-      lv2_atom_object_get(obj, patch_property, &property, patch_value, &value, 0);
-
-      if (property && property->type == atom_URID &&
-          ((const LV2_Atom_URID*)property)->body == model_uri &&
-          value && value->type == atom_Path) {
-        const char* path = (const char*)(value + 1);
-        fprintf(stderr, "[NAM UI] Received model path from plugin: %s\n", path);
-        current_model_path = path;
-        puglObscureView(view);
+    // If this is a sequence, iterate through events
+    if (atom->type == map->map(map->handle, LV2_ATOM__Sequence)) {
+      const LV2_Atom_Sequence* seq = (const LV2_Atom_Sequence*)buffer;
+      LV2_ATOM_SEQUENCE_FOREACH(seq, ev) {
+        if (ev->body.type == atom_Object) {
+          const LV2_Atom_Object* obj = (const LV2_Atom_Object*)&ev->body;
+          handle_patch_message(obj);
+        }
       }
+    } else if (atom->type == atom_Object) {
+      // Direct object (not in a sequence)
+      const LV2_Atom_Object* obj = (const LV2_Atom_Object*)buffer;
+      handle_patch_message(obj);
     }
     return;
   }
@@ -126,22 +128,54 @@ void PluginUI::port_event(uint32_t port_index, uint32_t buffer_size,
       input_slider.value = input_level;
       puglObscureView(view);
       break;
+
     case 5: // output_level
       output_level = *(const float*)buffer;
       output_slider.value = output_level;
       puglObscureView(view);
       break;
-    case 6: // enabled
-      enabled = *(const float*)buffer;
-      enabled_toggle.value = enabled;
-      puglObscureView(view);
-      break;
-    case 7: // hard_bypass
-      hard_bypass = *(const float*)buffer;
-      hard_bypass_toggle.value = hard_bypass;
-      puglObscureView(view);
-      break;
   }
+}
+
+void PluginUI::handle_patch_message(const LV2_Atom_Object* obj) {
+    if (obj->body.otype == patch_Set) {
+      // Extract property and value
+      const LV2_Atom* property = NULL;
+      const LV2_Atom* value = NULL;
+
+      lv2_atom_object_get(obj, patch_property, &property, patch_value, &value, 0);
+
+      if (property && property->type == atom_URID) {
+        LV2_URID property_urid = ((const LV2_Atom_URID*)property)->body;
+
+        // Handle model path
+        if (property_urid == model_uri && value && value->type == atom_Path) {
+          const char* path = (const char*)(value + 1);
+          current_model_path = path;
+          puglObscureView(view);
+        }
+        // Handle recommended input level
+        else if (property_urid == recommended_input && value && value->type == atom_Float) {
+          float recommended = ((const LV2_Atom_Float*)value)->body;
+
+          // Update slider and send to plugin
+          input_slider.value = recommended;
+          input_level = recommended;
+          send_control_value(4, recommended);
+          puglObscureView(view);
+        }
+        // Handle recommended output level
+        else if (property_urid == recommended_output && value && value->type == atom_Float) {
+          float recommended = ((const LV2_Atom_Float*)value)->body;
+
+          // Update slider and send to plugin
+          output_slider.value = recommended;
+          output_level = recommended;
+          send_control_value(5, recommended);
+          puglObscureView(view);
+        }
+      }
+    }
 }
 
 PuglStatus PluginUI::onEvent(PuglView* view, const PuglEvent* event) {
@@ -158,13 +192,10 @@ PuglStatus PluginUI::onEvent(PuglView* view, const PuglEvent* event) {
       return PUGL_SUCCESS;
     }
     case PUGL_BUTTON_PRESS: {
-      fprintf(stderr, "[NAM UI] Button press: button=%d x=%f y=%f\n",
-              event->button.button, event->button.x, event->button.y);
       ui->handle_button_press(event->button.x, event->button.y, event->button.button);
       return PUGL_SUCCESS;
     }
     case PUGL_BUTTON_RELEASE: {
-      fprintf(stderr, "[NAM UI] Button release: button=%d\n", event->button.button);
       ui->handle_button_release(event->button.x, event->button.y, event->button.button);
       return PUGL_SUCCESS;
     }
@@ -172,8 +203,6 @@ PuglStatus PluginUI::onEvent(PuglView* view, const PuglEvent* event) {
       return PUGL_SUCCESS;
     }
     case PUGL_CONFIGURE: {
-      fprintf(stderr, "[NAM UI] Configure: %dx%d\n",
-              (int)event->configure.width, (int)event->configure.height);
       return PUGL_SUCCESS;
     }
     default:
@@ -385,30 +414,22 @@ void PluginUI::handle_motion(double x, double y) {
 }
 
 void PluginUI::handle_button_press(double x, double y, uint32_t button) {
-  fprintf(stderr, "[NAM UI] handle_button_press called: x=%f y=%f button=%d\n", x, y, button);
-
   if (button != 0) {
-    fprintf(stderr, "[NAM UI] Ignoring non-left-click button %d\n", button);
     return; // Only handle left click (button 0 in Pugl)
   }
 
   Widget* w = get_widget_at(x, y);
   if (!w) {
-    fprintf(stderr, "[NAM UI] No widget found at %f,%f\n", x, y);
     return;
   }
 
-  fprintf(stderr, "[NAM UI] Widget found: type=%d\n", (int)w->type);
-
   switch (w->type) {
     case ControlType::ModelButton:
-      fprintf(stderr, "[NAM UI] Model button clicked! Opening file dialog...\n");
       w->dragging = true; // Visual feedback
       puglObscureView(view);
       open_file_dialog();
       w->dragging = false;
       puglObscureView(view);
-      fprintf(stderr, "[NAM UI] File dialog closed. Current model: %s\n", current_model_path.c_str());
       break;
 
     case ControlType::InputSlider:
@@ -442,17 +463,12 @@ void PluginUI::handle_button_release(double x, double y, uint32_t button) {
 }
 
 void PluginUI::send_control_value(uint32_t port, float value) {
-  fprintf(stderr, "[NAM UI] send_control_value: port=%d value=%f\n", port, value);
   if (write_function) {
     write_function(controller, port, sizeof(float), 0, &value);
-  } else {
-    fprintf(stderr, "[NAM UI] ERROR: write_function is NULL!\n");
   }
 }
 
 void PluginUI::open_file_dialog() {
-  fprintf(stderr, "[NAM UI] open_file_dialog() called\n");
-
   // Try zenity first, then kdialog as fallback
   const char* commands[] = {
     "zenity --file-selection --title='Select NAM Model' "
@@ -464,7 +480,6 @@ void PluginUI::open_file_dialog() {
   };
 
   for (int i = 0; commands[i] != nullptr; i++) {
-    fprintf(stderr, "[NAM UI] Trying command %d: %s\n", i, commands[i]);
     FILE* fp = popen(commands[i], "r");
     if (!fp) continue;
 
@@ -499,9 +514,9 @@ void PluginUI::open_file_dialog() {
 }
 
 void PluginUI::send_model_path(const char* path) {
-  if (!write_function) return;
-
-  fprintf(stderr, "[NAM UI] Sending model path to plugin: %s\n", path);
+  if (!write_function) {
+    return;
+  }
 
   // Build an atom message to set the model path
   uint8_t buffer[1024];
@@ -519,15 +534,15 @@ void PluginUI::send_model_path(const char* path) {
 
   lv2_atom_forge_pop(&forge, &frame);
 
+  uint32_t event_transfer = map->map(map->handle, LV2_ATOM__eventTransfer);
+  uint32_t msg_size = lv2_atom_total_size(msg);
+
   // Send to plugin via control port (port 0)
-  write_function(controller, 0, lv2_atom_total_size(msg),
-                 map->map(map->handle, LV2_ATOM__eventTransfer), msg);
+  write_function(controller, 0, msg_size, event_transfer, msg);
 }
 
 void PluginUI::request_current_model() {
   if (!write_function) return;
-
-  fprintf(stderr, "[NAM UI] Requesting current model path from plugin\n");
 
   // Build a patch:Get message to request the current model path
   uint8_t buffer[256];

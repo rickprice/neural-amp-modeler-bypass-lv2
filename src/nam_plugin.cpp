@@ -1,6 +1,10 @@
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <sys/stat.h>
 #include <utility>
 
 #include "nam_plugin.h"
@@ -85,6 +89,8 @@ bool Plugin::initialize(double sampleRate,
   uris.units_frame = map->map(map->handle, LV2_UNITS__frame);
 
   uris.model_Path = map->map(map->handle, MODEL_URI);
+  uris.recommended_input = map->map(map->handle, PLUGIN_URI "#recommendedInput");
+  uris.recommended_output = map->map(map->handle, PLUGIN_URI "#recommendedOutput");
 
   if (options != nullptr)
     options_set(this, options);
@@ -115,24 +121,37 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         // but do clear the model.
         model = nullptr;
       } else {
-        lv2_log_trace(&nam->logger, "Staging model change: `%s`\n", msg->path);
-
-        model = NeuralAudio::NeuralModel::CreateFromFile(msg->path);
+        // Check if file exists before attempting to load
+        struct stat buffer;
+        if (stat(msg->path, &buffer) != 0) {
+          model = nullptr;
+        } else {
+          lv2_log_trace(&nam->logger, "Staging model change: `%s`\n", msg->path);
+          model = NeuralAudio::NeuralModel::CreateFromFile(msg->path);
+        }
       }
 
       if (model != nullptr) {
         response.model = model;
-
         memcpy(response.path, msg->path, pathlen);
       }
     } catch (const std::exception &) {
+      // Model loading failed
     }
 
     if (model == nullptr) {
       response.path[0] = '\0';
 
-      lv2_log_error(&nam->logger, "Unable to load model from: '%s'\n",
-                    msg->path);
+      // Only log error if path was not empty (avoid spam on project load with missing files)
+      if (strlen(msg->path) > 0) {
+        struct stat buffer;
+        if (stat(msg->path, &buffer) == 0) {
+          // File exists but failed to load - this is a real error
+          lv2_log_error(&nam->logger, "Unable to load model from: '%s'\n",
+                        msg->path);
+        }
+        // If file doesn't exist, we already logged it above
+      }
     }
 
     respond(handle, sizeof(response), &response);
@@ -175,8 +194,9 @@ LV2_Worker_Status Plugin::work_response(LV2_Handle instance, uint32_t size,
   // send reply
   nam->schedule->schedule_work(nam->schedule->handle, sizeof(reply), &reply);
 
-  // report change to host/ui
-  nam->write_current_path();
+  // Set flags to send model path and recommended levels on next process() call
+  nam->send_model_path_flag = true;
+  nam->send_recommended_levels_flag = true;
 
   return LV2_WORKER_SUCCESS;
 }
@@ -203,7 +223,7 @@ void Plugin::process(uint32_t n_samples) noexcept {
     if (event->body.type == uris.atom_Object) {
       const auto obj = reinterpret_cast<LV2_Atom_Object *>(&event->body);
       if (obj->body.otype == uris.patch_Get) {
-        write_current_path();
+        send_model_path_flag = true;
       } else if (obj->body.otype == uris.patch_Set) {
         const LV2_Atom *property = NULL;
         const LV2_Atom *file_path = NULL;
@@ -217,10 +237,23 @@ void Plugin::process(uint32_t n_samples) noexcept {
             file_path->size > 0 && file_path->size < MAX_FILE_NAME) {
           LV2LoadModelMsg msg = {kWorkTypeLoad, {}};
           memcpy(msg.path, file_path + 1, file_path->size);
+          msg.path[file_path->size] = '\0';
           schedule->schedule_work(schedule->handle, sizeof(msg), &msg);
         }
       }
     }
+  }
+
+  // ========== Send Model Path if Flag is Set ==========
+  if (send_model_path_flag) {
+    write_current_path();
+    send_model_path_flag = false;
+  }
+
+  // ========== Send Recommended Levels if Flag is Set ==========
+  if (send_recommended_levels_flag) {
+    send_recommended_levels();
+    send_recommended_levels_flag = false;
   }
 
   // ========== Hard Bypass Check ==========
@@ -230,6 +263,8 @@ void Plugin::process(uint32_t n_samples) noexcept {
   if (bypassed && hardBypassed) {
     // Hard bypass: just copy input to output
     std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
+    // Close sequence before early return
+    lv2_atom_forge_pop(&atom_forge, &sequence_frame);
     return;
   }
 
@@ -276,6 +311,10 @@ void Plugin::process(uint32_t n_samples) noexcept {
   }
 
   outputLevel = outGain;
+
+  // ========== Finalize Atom Sequence ==========
+  // Close the sequence frame to finalize all atom messages sent this cycle
+  lv2_atom_forge_pop(&atom_forge, &sequence_frame);
 }
 
 uint32_t Plugin::options_get(LV2_Handle, LV2_Options_Option *) {
@@ -421,5 +460,36 @@ void Plugin::write_current_path() {
                       (uint32_t)currentModelPath.length() + 1);
 
   lv2_atom_forge_pop(&atom_forge, &frame);
+}
+
+void Plugin::send_recommended_levels() {
+  if (!currentModel) return;
+
+  float recommendedInput = currentModel->GetRecommendedInputDBAdjustment();
+  float recommendedOutput = currentModel->GetRecommendedOutputDBAdjustment();
+
+  // Send recommended input level
+  LV2_Atom_Forge_Frame frame_input;
+  lv2_atom_forge_frame_time(&atom_forge, 0);
+  lv2_atom_forge_object(&atom_forge, &frame_input, 0, uris.patch_Set);
+
+  lv2_atom_forge_key(&atom_forge, uris.patch_property);
+  lv2_atom_forge_urid(&atom_forge, uris.recommended_input);
+  lv2_atom_forge_key(&atom_forge, uris.patch_value);
+  lv2_atom_forge_float(&atom_forge, recommendedInput);
+
+  lv2_atom_forge_pop(&atom_forge, &frame_input);
+
+  // Send recommended output level
+  LV2_Atom_Forge_Frame frame_output;
+  lv2_atom_forge_frame_time(&atom_forge, 0);
+  lv2_atom_forge_object(&atom_forge, &frame_output, 0, uris.patch_Set);
+
+  lv2_atom_forge_key(&atom_forge, uris.patch_property);
+  lv2_atom_forge_urid(&atom_forge, uris.recommended_output);
+  lv2_atom_forge_key(&atom_forge, uris.patch_value);
+  lv2_atom_forge_float(&atom_forge, recommendedOutput);
+
+  lv2_atom_forge_pop(&atom_forge, &frame_output);
 }
 } // namespace NAM

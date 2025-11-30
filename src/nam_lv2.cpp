@@ -76,7 +76,7 @@ static const void *extension_data(const char *uri) {
 }
 
 static const LV2_Descriptor descriptor = {
-    PlUGIN_URI,
+    PLUGIN_URI,
     instantiate,
     connect_port,
     activate,
