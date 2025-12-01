@@ -256,12 +256,12 @@ void Plugin::process(uint32_t n_samples) noexcept {
     send_recommended_levels_flag = false;
   }
 
-  // ========== Hard Bypass Check ==========
+  // ========== Bypass Check ==========
   const bool bypassed = *(ports.enabled) < 0.5f;
   const bool hardBypassed = *(ports.hard_bypass) >= 0.5f;
 
   if (bypassed && hardBypassed) {
-    // Hard bypass: just copy input to output
+    // Hard bypass: just copy input to output, skip all processing
     std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
     // Close sequence before early return
     lv2_atom_forge_pop(&atom_forge, &sequence_frame);
@@ -271,6 +271,9 @@ void Plugin::process(uint32_t n_samples) noexcept {
   // ========== Calculate Target Gain Values ==========
   const float *__restrict in = ports.audio_in;
   float *__restrict out = ports.audio_out;
+
+  // For soft bypass: process everything but save input for later
+  const bool softBypassed = bypassed && !hardBypassed;
 
   float modelInputAdjustmentDB = 0.0f;
   float modelOutputAdjustmentDB = 0.0f;
@@ -312,11 +315,11 @@ void Plugin::process(uint32_t n_samples) noexcept {
 
   outputLevel = outGain;
 
-  // If we are only bypassed, we need to copy the input to the output, but we need to still
-  // do all the processing to keep the CPU load constant
-  if (bypassed) {
-    // Soft bypass: just copy input to output
-    std::copy(ports.audio_in, ports.audio_in + n_samples, ports.audio_out);
+  // ========== Soft Bypass: Replace Output with Input ==========
+  // All processing has occurred (maintaining constant CPU load),
+  // but we discard the result and copy input to output
+  if (softBypassed) {
+    std::copy(in, in + n_samples, out);
   }
 
   // ========== Finalize Atom Sequence ==========
