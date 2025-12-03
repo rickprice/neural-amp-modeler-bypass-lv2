@@ -142,5 +142,8 @@ private:
 
   bool send_recommended_levels_flag = false;
   bool send_model_path_flag = false;
+
+  // Buffer to save input for soft bypass (supports in-place processing)
+  std::vector<float> savedInputBuffer;
 };
 } // namespace NAM

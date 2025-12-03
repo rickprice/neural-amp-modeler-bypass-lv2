@@ -204,6 +204,9 @@ LV2_Worker_Status Plugin::work_response(LV2_Handle instance, uint32_t size,
 void Plugin::set_max_buffer_size(int size) noexcept {
   maxBufferSize = size;
 
+  // Resize saved input buffer for soft bypass
+  savedInputBuffer.resize(size);
+
   NeuralAudio::NeuralModel::SetDefaultMaxAudioBufferSize(size);
 }
 
@@ -275,6 +278,11 @@ void Plugin::process(uint32_t n_samples) noexcept {
   // For soft bypass: process everything but save input for later
   const bool softBypassed = bypassed && !hardBypassed;
 
+  // Save input buffer for soft bypass (handles in-place processing)
+  if (softBypassed) {
+    std::copy(in, in + n_samples, savedInputBuffer.begin());
+  }
+
   float modelInputAdjustmentDB = 0.0f;
   float modelOutputAdjustmentDB = 0.0f;
 
@@ -317,9 +325,9 @@ void Plugin::process(uint32_t n_samples) noexcept {
 
   // ========== Soft Bypass: Replace Output with Input ==========
   // All processing has occurred (maintaining constant CPU load),
-  // but we discard the result and copy input to output
+  // but we discard the result and copy saved input to output
   if (softBypassed) {
-    std::copy(in, in + n_samples, out);
+    std::copy(savedInputBuffer.begin(), savedInputBuffer.begin() + n_samples, out);
   }
 
   // ========== Finalize Atom Sequence ==========
